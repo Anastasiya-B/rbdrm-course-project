@@ -1,0 +1,23 @@
+{
+  "name": "rbdrm-course-project",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/app.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Anastasiya-B/rbdrm-course-project.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Anastasiya-B/rbdrm-course-project/issues"
+  },
+  "homepage": "https://github.com/Anastasiya-B/rbdrm-course-project#readme",
+  "dependencies": {
+    "express": "^4.22.2"
+  }
+}

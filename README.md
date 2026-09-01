@@ -1,1 +1,3 @@
-# rbdrm-course-project
+# Marketplace API
+
+Course project for Node.js.
