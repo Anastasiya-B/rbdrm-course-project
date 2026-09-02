@@ -42,6 +42,8 @@ const orders = [
   },
 ];
 
+const idempotencyStore = new Map();
+
 app.get('/products', (req, res) => {
   res.json({
     items: products,
@@ -89,14 +91,49 @@ app.get('/orders/:id', (req, res) => {
 });
 
 app.post('/orders', (req, res) => {
+  const idempotencyKey = req.headers['idempotency-key'];
+  const requestBody = JSON.stringify(req.body);
+
+  const storedRequest = idempotencyStore.get(idempotencyKey);
+
+  if (storedRequest) {
+    if (storedRequest.body !== requestBody) {
+      return res.status(422).type('application/problem+json').json({
+        type: 'https://example.com/problems/idempotency-conflict',
+        title: 'Unprocessable entity',
+        status: 422,
+        detail:
+          'The same Idempotency-Key cannot be reused with a different request body.',
+        instance: req.originalUrl,
+      });
+    }
+
+    return res.status(201).json(storedRequest.order);
+  }
+
+  const totalCents = req.body.items.reduce((total, item) => {
+    const product = products.find(product => product.id === item.product_id);
+
+    if (!product) {
+      return total;
+    }
+
+    return total + product.price_cents * item.quantity;
+  }, 0);
+
   const newOrder = {
     id: orders.length + 1,
     items: req.body.items,
-    total_cents: 260000,
+    total_cents: totalCents,
     status: 'created',
   };
 
   orders.push(newOrder);
+
+  idempotencyStore.set(idempotencyKey, {
+    body: requestBody,
+    order: newOrder,
+  });
 
   res.status(201).json(newOrder);
 });
@@ -104,16 +141,23 @@ app.post('/orders', (req, res) => {
 app.use((err, req, res, next) => {
   const status = err.status || 500;
 
-  res
-    .status(status)
-    .type('application/problem+json')
-    .json({
-      type: 'https://example.com/problems/validation-error',
-      title: status === 400 ? 'Validation error' : 'Internal server error',
-      status,
-      detail: err.message,
-      instance: req.originalUrl,
-    });
+  let title = 'Internal server error';
+
+  if (status === 400) {
+    title = 'Validation error';
+  } else if (status === 404) {
+    title = 'Not found';
+  } else if (status === 422) {
+    title = 'Unprocessable entity';
+  }
+
+  res.status(status).type('application/problem+json').json({
+    type: 'https://example.com/problems/validation-error',
+    title,
+    status,
+    detail: err.message,
+    instance: req.originalUrl,
+  });
 });
 
 app.listen(port, () => {

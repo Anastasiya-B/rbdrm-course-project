@@ -135,6 +135,9 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
   /orders/{id}:
     get:
       operationId: getOrderById
@@ -164,6 +167,7 @@ components:
   schemas:
     Product:
       type: object
+      additionalProperties: false
       required:
         - id
         - name
@@ -181,6 +185,7 @@ components:
 
     OrderItem:
       type: object
+      additionalProperties: false
       required:
         - product_id
         - quantity
@@ -196,6 +201,7 @@ components:
 
     CreateOrderRequest:
       type: object
+      additionalProperties: false
       required:
         - items
       properties:
@@ -207,6 +213,7 @@ components:
 
     Order:
       type: object
+      additionalProperties: false
       required:
         - id
         - items
@@ -230,6 +237,7 @@ components:
 
     ProductListResponse:
       type: object
+      additionalProperties: false
       required:
         - items
         - next_cursor
@@ -246,6 +254,7 @@ components:
 
     OrderListResponse:
       type: object
+      additionalProperties: false
       required:
         - items
         - next_cursor
@@ -262,6 +271,7 @@ components:
 
     Problem:
       type: object
+      additionalProperties: false
       required:
         - type
         - title
@@ -305,6 +315,13 @@ components:
 
     NotFound:
       description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    UnprocessableEntity:
+      description: Idempotency key was reused with a different request body.
       content:
         application/problem+json:
           schema:
