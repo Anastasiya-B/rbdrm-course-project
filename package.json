@@ -18,6 +18,10 @@
   },
   "homepage": "https://github.com/Anastasiya-B/rbdrm-course-project#readme",
   "dependencies": {
-    "express": "^4.22.2"
+    "express": "^4.22.2",
+    "express-openapi-validator": "^5.6.2"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^2.46.0"
   }
 }
