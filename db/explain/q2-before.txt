@@ -1,0 +1,16 @@
+                                                   QUERY PLAN                                                    
+-----------------------------------------------------------------------------------------------------------------
+ Sort  (cost=3694.93..3713.27 rows=7335 width=40) (actual time=17.217..17.701 rows=7500 loops=1)
+   Sort Key: created_at DESC
+   Sort Method: quicksort  Memory: 720kB
+   Buffers: shared hit=1352
+   ->  Seq Scan on orders  (cost=0.00..3224.00 rows=7335 width=40) (actual time=0.014..15.532 rows=7500 loops=1)
+         Filter: (status = 'cancelled'::text)
+         Rows Removed by Filter: 142500
+         Buffers: shared hit=1349
+ Planning:
+   Buffers: shared hit=92
+ Planning Time: 0.403 ms
+ Execution Time: 18.140 ms
+(12 rows)
+

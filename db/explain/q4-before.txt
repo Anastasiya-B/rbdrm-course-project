@@ -1,0 +1,18 @@
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=6351.54..6351.59 rows=20 width=33) (actual time=28.803..28.807 rows=20 loops=1)
+   Buffers: shared hit=4856
+   ->  Sort  (cost=6351.54..6351.68 rows=53 width=33) (actual time=28.802..28.804 rows=20 loops=1)
+         Sort Key: (ts_rank(search_vector, '''шкіряні'' & ''кросівки'''::tsquery)) DESC, id
+         Sort Method: top-N heapsort  Memory: 26kB
+         Buffers: shared hit=4856
+         ->  Seq Scan on products  (cost=0.00..6350.13 rows=53 width=33) (actual time=0.024..28.135 rows=2400 loops=1)
+               Filter: (search_vector @@ '''шкіряні'' & ''кросівки'''::tsquery)
+               Rows Removed by Filter: 117600
+               Buffers: shared hit=4850
+ Planning:
+   Buffers: shared hit=96
+ Planning Time: 0.464 ms
+ Execution Time: 28.832 ms
+(14 rows)
+

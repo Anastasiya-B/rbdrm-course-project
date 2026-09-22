@@ -1,0 +1,11 @@
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_users_lower_email on users  (cost=0.42..8.44 rows=1 width=63) (actual time=0.023..0.024 rows=1 loops=1)
+   Index Cond: (lower(email) = 'user54321@example.com'::text)
+   Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=107
+ Planning Time: 0.425 ms
+ Execution Time: 0.050 ms
+(7 rows)
+
