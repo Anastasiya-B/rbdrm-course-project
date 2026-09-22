@@ -2,10 +2,10 @@
 
 set -e
 
-DB_CONTAINER="marketplace-postgres"
-DB_USER="marketplace"
-DB_NAME="marketplace"
-SECRET_FILE="secrets/db_password"
+DB_CONTAINER="${DB_CONTAINER:-marketplace-postgres}"
+DB_USER="${DB_USER:-marketplace}"
+DB_NAME="${DB_NAME:-marketplace}"
+SECRET_FILE="${SECRET_FILE:-secrets/db_password}"
 
 NEW_PASSWORD="marketplace_$(date +%s)"
 
