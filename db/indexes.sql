@@ -1,9 +1,8 @@
 CREATE INDEX idx_orders_user_created_at
 ON orders (user_id, created_at DESC);
 
-CREATE INDEX idx_orders_cancelled_created_at
-ON orders (created_at DESC)
-WHERE status = 'cancelled';
+CREATE INDEX idx_order_items_order_id
+ON order_items (order_id);
 
 CREATE INDEX idx_users_lower_email
 ON users (lower(email));

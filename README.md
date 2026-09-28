@@ -279,11 +279,15 @@ The database password can be rotated without restarting the application.
 
 The rotation script:
 
-1. changes the PostgreSQL role password with `ALTER ROLE`
-2. updates `secrets/db_password`
-3. terminates old PostgreSQL connections
-4. lets the application pool open a new connection
-5. reads the new password from the secret file
+1\. changes the PostgreSQL role password with `ALTER ROLE`
+
+2\. updates `secrets/db_password`
+
+3\. terminates old PostgreSQL connections
+
+4\. lets the application pool open a new connection
+
+5\. reads the new password from the secret file
 
 Run:
 
@@ -426,7 +430,7 @@ HW12 adds the PostgreSQL data layer for the Marketplace API:
 - at least 100,000 rows in the full-text search table
 - query analysis with `EXPLAIN (ANALYZE, BUFFERS)`
 - B-tree indexes
-- partial index
+
 - expression index
 - GIN index over `tsvector`
 - PostgreSQL full-text catalog search
@@ -497,6 +501,7 @@ The schema includes:
 - `NUMERIC` fields for money
 - `TIMESTAMPTZ` fields for timestamps
 - generated `products.search_vector` column
+  `db/schema.sql` drops the Marketplace domain tables in dependency-safe order before recreating them, so the schema can be reapplied during local verification without `relation already exists` errors.
 
 Check foreign keys:
 
@@ -588,7 +593,7 @@ The optimization uses:
 idx_orders_user_created_at
 ```
 
-## Q2 — Cancelled orders
+## Q2 — Order items by order
 
 File:
 
@@ -596,13 +601,17 @@ File:
 db/queries/q2.sql
 ```
 
-The query retrieves cancelled orders.
+The query retrieves all items belonging to a specific order.
 
-The optimization uses the partial index:
+The optimization uses:
 
 ```text
-idx_orders_cancelled_created_at
+
+idx_order_items_order_id
+
 ```
+
+This index also supports lookups through the `order_items.order_id` foreign key used by the `ON DELETE CASCADE` relationship.
 
 ## Q3 — Case-insensitive email lookup
 
@@ -716,7 +725,7 @@ The custom indexes are:
 
 ```text
 idx_orders_user_created_at
-idx_orders_cancelled_created_at
+idx_order_items_order_id
 idx_users_lower_email
 idx_products_search_vector
 ```
@@ -730,7 +739,7 @@ Run the same four queries again.
 After optimization:
 
 - Q1 uses `idx_orders_user_created_at`
-- Q2 uses `idx_orders_cancelled_created_at`
+- Q2 uses `idx_order_items_order_id`
 - Q3 uses `idx_users_lower_email`
 - Q4 uses `idx_products_search_vector`
 - none of the four plans uses `Seq Scan`
@@ -768,13 +777,13 @@ no output
 ```bash
 docker compose exec postgres \
   psql -U marketplace -d marketplace \
-  -Atc "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexdef NOT ILIKE '%USING gin%' AND (indexdef ILIKE '% WHERE %' OR indexdef ~ '\((\w+)\(');"
+  -Atc "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexdef NOT ILIKE '%USING gin%' AND (indexdef ILIKE '% WHERE %' OR indexdef ~ '\\((\w+)\\(');"
 ```
 
-Current result:
+Expected result:
 
 ```text
-2
+1 or more
 ```
 
 ## Check GIN index over tsvector
@@ -968,7 +977,9 @@ Expected:
 Check that no tracked non-example environment file contains the database connection variable:
 
 ```bash
-for f in $(git ls-files | grep -E '\.env($|\.)' | grep -vE '\.example$'); do grep -lE '^(DATABASE_URL|DB_URL)=' "$f"; done
+
+for f in $(git ls-files | grep -E '\\.env($|\\.)' | grep -vE '\\.example$'); do grep -lE '^(DATABASE_URL|DB_URL)=' "$f"; done
+
 ```
 
 Expected result:

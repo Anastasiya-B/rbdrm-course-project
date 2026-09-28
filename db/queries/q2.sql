@@ -1,9 +1,10 @@
 SELECT
   id,
-  user_id,
-  status,
-  total_amount,
+  order_id,
+  product_id,
+  quantity,
+  unit_price,
   created_at
-FROM orders
-WHERE status = 'cancelled'
-ORDER BY created_at DESC
+FROM order_items
+WHERE order_id = 12345
+ORDER BY id
