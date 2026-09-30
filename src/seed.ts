@@ -12,19 +12,28 @@ async function seed(): Promise<void> {
     await queryRunner.startTransaction();
 
     await queryRunner.query(`
-      INSERT INTO users (id, email, full_name)
+      INSERT INTO users (
+        id,
+        email,
+        full_name,
+        balance
+      )
       VALUES
-        (1, 'anna@example.com', 'Анна Коваль'),
-        (2, 'oleh@example.com', 'Олег Бондар'),
-        (3, 'maria@example.com', 'Марія Шевченко'),
-        (4, 'ivan@example.com', 'Іван Мельник'),
-        (5, 'olena@example.com', 'Олена Ткаченко'),
-        (6, 'taras@example.com', 'Тарас Кравченко'),
-        (7, 'sofia@example.com', 'Софія Левченко'),
-        (8, 'andrii@example.com', 'Андрій Савчук'),
-        (9, 'natalia@example.com', 'Наталія Мороз'),
-        (10, 'maksym@example.com', 'Максим Ковальчук')
-      ON CONFLICT (id) DO NOTHING
+        (1, 'anna@example.com', 'Анна Коваль', 10000000),
+        (2, 'oleh@example.com', 'Олег Бондар', 10000000),
+        (3, 'maria@example.com', 'Марія Шевченко', 10000000),
+        (4, 'ivan@example.com', 'Іван Мельник', 10000000),
+        (5, 'olena@example.com', 'Олена Ткаченко', 10000000),
+        (6, 'taras@example.com', 'Тарас Кравченко', 10000000),
+        (7, 'sofia@example.com', 'Софія Левченко', 10000000),
+        (8, 'andrii@example.com', 'Андрій Савчук', 10000000),
+        (9, 'natalia@example.com', 'Наталія Мороз', 10000000),
+        (10, 'maksym@example.com', 'Максим Ковальчук', 10000000)
+      ON CONFLICT (id)
+      DO UPDATE SET
+        email = EXCLUDED.email,
+        full_name = EXCLUDED.full_name,
+        balance = EXCLUDED.balance
     `);
 
     await queryRunner.query(`
@@ -44,7 +53,7 @@ async function seed(): Promise<void> {
           'Шкіряні кросівки',
           'Зручні шкіряні кросівки для щоденних прогулянок містом',
           249900,
-          15,
+          10,
           true
         ),
         (
@@ -128,7 +137,14 @@ async function seed(): Promise<void> {
           14,
           true
         )
-      ON CONFLICT (id) DO NOTHING
+      ON CONFLICT (id)
+      DO UPDATE SET
+        owner_id = EXCLUDED.owner_id,
+        name = EXCLUDED.name,
+        description = EXCLUDED.description,
+        price = EXCLUDED.price,
+        stock_quantity = EXCLUDED.stock_quantity,
+        is_active = EXCLUDED.is_active
     `);
 
     await queryRunner.query(`
@@ -163,25 +179,16 @@ async function seed(): Promise<void> {
       VALUES
         (1, 1, 1, 1, 249900),
         (2, 1, 2, 1, 129900),
-
         (3, 2, 3, 1, 4599900),
-
         (4, 3, 4, 1, 349900),
         (5, 3, 5, 1, 289900),
-
         (6, 4, 7, 1, 899900),
-
         (7, 5, 5, 1, 289900),
         (8, 5, 8, 1, 199900),
-
         (9, 6, 9, 1, 179900),
-
         (10, 7, 4, 1, 349900),
-
         (11, 8, 10, 1, 219900),
-
         (12, 9, 5, 1, 289900),
-
         (13, 10, 6, 1, 159900),
         (14, 10, 9, 1, 169900)
       ON CONFLICT (id) DO NOTHING
@@ -215,6 +222,20 @@ async function seed(): Promise<void> {
       SELECT setval(
         pg_get_serial_sequence('order_items', 'id'),
         COALESCE((SELECT MAX(id) FROM order_items), 1),
+        true
+      )
+    `);
+
+    await queryRunner.query(`
+      SELECT setval(
+        pg_get_serial_sequence('post_processing_tasks', 'id'),
+        COALESCE(
+          (
+            SELECT MAX(id)
+            FROM post_processing_tasks
+          ),
+          1
+        ),
         true
       )
     `);

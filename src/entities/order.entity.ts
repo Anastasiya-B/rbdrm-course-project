@@ -11,6 +11,7 @@ import {
 
 import { User } from './user.entity';
 import { OrderItem } from './order-item.entity';
+import { PostProcessingTask } from './post-processing-task.entity';
 
 export const ORDER_STATUSES = [
   'created',
@@ -67,4 +68,7 @@ export class Order {
 
   @OneToMany(() => OrderItem, orderItem => orderItem.order)
   items!: OrderItem[];
+
+  @OneToMany(() => PostProcessingTask, task => task.order)
+  postProcessingTasks!: PostProcessingTask[];
 }

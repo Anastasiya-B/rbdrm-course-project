@@ -11,6 +11,9 @@ The project currently includes:
 - deterministic seed data
 - N+1 demonstration and fix
 - QueryBuilder reporting
+- transactional checkout with concurrency protection
+- worker pool with `FOR UPDATE SKIP LOCKED`
+- retry handling for serialization failures and deadlocks
 
 ## Install
 
@@ -52,7 +55,8 @@ src/entities/
 ├── user.entity.ts
 ├── product.entity.ts
 ├── order.entity.ts
-└── order-item.entity.ts
+├── order-item.entity.ts
+└── post-processing-task.entity.ts
 ```
 
 `order_items` is an explicit join entity because the relation contains its own data: `quantity`, `unit_price` and timestamps.
@@ -72,10 +76,11 @@ The main relations are:
 - `User -> Order`
 - `Order -> OrderItem`
 - `Product -> OrderItem`
+- `Order -> PostProcessingTask`
 
 Deletion behavior:
 
-- `Order -> OrderItem` uses `CASCADE` because order items belong to an order and should be removed with it.
+- `Order -> OrderItem` and `Order -> PostProcessingTask` use `CASCADE` because these rows belong to the order.
 - user/product parent relations use `RESTRICT` to protect referenced historical data.
 
 ## Migrations
@@ -86,7 +91,7 @@ TypeORM schema synchronization is disabled:
 synchronize: false;
 ```
 
-The schema is created and changed only through migrations.
+The schema is created and changed only through migrations:
 
 ```bash
 npm run build
@@ -96,17 +101,13 @@ npm run migrate:revert
 npm run migrate
 ```
 
-The initial migration creates:
+The initial migration creates the marketplace tables, foreign keys, checks and HW12 indexes.
 
-- `users`
-- `products`
-- `orders`
-- `order_items`
-- foreign keys and checks
-- `idx_orders_user_created_at`
-- `idx_order_items_order_id`
-- `idx_users_lower_email`
-- `idx_products_search_vector`
+The HW14 migration adds:
+
+- `users.balance`
+- `post_processing_tasks`
+- queue constraints and indexes
 
 Detailed HW12 query plans remain in:
 
@@ -142,6 +143,8 @@ products:    10
 orders:      10
 order_items: 14
 ```
+
+The seed also restores buyer balances and the race-test product stock so concurrency demos are repeatable.
 
 ## N+1 demonstration
 
@@ -197,6 +200,98 @@ Repository methods are used for ordinary CRUD and simple filters when the result
 
 QueryBuilder is used for joins, aggregation, grouping, calculated columns and other SQL that cannot be expressed clearly with `find()`.
 
+## Concurrency
+
+### Transactional checkout
+
+Checkout runs in a single transaction and performs:
+
+- atomic stock decrement
+- buyer balance decrement
+- order creation
+- order item creation
+- post-processing task creation
+
+Stock protection uses an atomic statement:
+
+```sql
+UPDATE products
+SET stock_quantity = stock_quantity - $1
+WHERE id = $2
+  AND stock_quantity >= $1
+RETURNING id, price, stock_quantity
+```
+
+This approach was chosen instead of a separate read-modify-write flow because PostgreSQL checks available stock and performs the decrement atomically. Concurrent requests therefore cannot oversell the product. If stock or balance is insufficient, the whole transaction is rolled back.
+
+### Race demo
+
+Run:
+
+```bash
+npm run demo:race
+```
+
+Measured result:
+
+```text
+Attempts: 50
+Successful: 10
+Final stock: 0
+Negative stock rows: 0
+Invariant passed: true
+```
+
+The test runs 50 checkout calls concurrently against one product with initial stock `10` and quantity `1`.
+
+### Worker pool
+
+Run:
+
+```bash
+npm run demo:workers
+```
+
+Workers claim queue rows with `FOR UPDATE SKIP LOCKED` and keep the transaction open while processing the task.
+
+Measured result:
+
+```text
+worker-1: 4
+worker-2: 3
+worker-3: 3
+Total tasks: 10
+Processed once: 10
+Processed twice: 0
+Elapsed: 861 ms
+Sequential estimate: 2000 ms
+Active workers: 3
+Invariant passed: true
+```
+
+The worker pool is faster than sequential processing and every task is committed exactly once.
+
+### Retry pattern
+
+Run:
+
+```bash
+npm run demo:retry
+```
+
+Measured result:
+
+```text
+transaction-2: caught 40001, retry 1/5 after 50 ms
+Initial balance: 1000000
+Increment per transaction: 1000
+Expected final balance: 1002000
+Actual final balance: 1002000
+Invariant passed: true
+```
+
+The retry wrapper catches only PostgreSQL `40001` (serialization failure) and `40P01` (deadlock detected). These errors are transient and safe to retry from the beginning of the transaction. Business errors and unrelated database errors are propagated instead of being retried.
+
 ## Secret wrapper
 
 Database commands are wrapped by:
@@ -215,6 +310,9 @@ migrate:show
 migrate:revert
 seed
 demo:nplus1
+demo:race
+demo:workers
+demo:retry
 report
 ```
 
@@ -237,6 +335,9 @@ npm run seed
 npm run seed
 npm run demo:nplus1
 npm run report
+npm run demo:race
+npm run demo:workers
+npm run demo:retry
 ```
 
 Check that synchronization is not enabled:
@@ -259,6 +360,36 @@ Check QueryBuilder grouping:
 
 ```bash
 grep -rniE "\.(add)?groupBy\(" src/
+```
+
+Check atomic checkout protection:
+
+```bash
+grep -rniE --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist "for update|returning|pessimistic_write" .
+```
+
+Check `SKIP LOCKED` usage:
+
+```bash
+grep -rniE --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist "skip[ \_]locked" .
+```
+
+Check retryable database error codes:
+
+```bash
+grep -rniE --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist "40001|40P01" .
+```
+
+Check that HW14 demos use the secret wrapper:
+
+```bash
+node -e "const s=require('./package.json').scripts;const bad=['demo:race','demo:workers','demo:retry'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+```
+
+Expected:
+
+```text
+OK
 ```
 
 Check that `migrate` and `seed` use the secret wrapper:
@@ -287,9 +418,13 @@ Expected: no output.
 src/
 ├── entities/
 ├── migrations/
+├── checkout.ts
 ├── data-source.ts
 ├── seed.ts
 ├── demo-nplus1.ts
+├── demo-race.ts
+├── demo-workers.ts
+├── demo-retry.ts
 └── report.ts
 scripts/
 └── with-secrets.sh
@@ -303,4 +438,4 @@ db/
 
 ## Submission
 
-Submit the Pull Request from the `hw-13` branch.
+Submit the Pull Request from the `hw-14` branch.

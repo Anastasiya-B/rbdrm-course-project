@@ -1,8 +1,10 @@
 INSERT INTO users (
+  id,
   email,
   full_name,
-  created_at
+  balance
 )
+
 SELECT
   'user' || gs || '@example.com',
   'Користувач ' || gs,

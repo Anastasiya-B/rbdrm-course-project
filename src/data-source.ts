@@ -2,7 +2,13 @@ import 'reflect-metadata';
 
 import { DataSource } from 'typeorm';
 
-import { Order, OrderItem, Product, User } from './entities';
+import {
+  Order,
+  OrderItem,
+  PostProcessingTask,
+  Product,
+  User,
+} from './entities';
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -32,7 +38,7 @@ const AppDataSource = new DataSource({
   username: getRequiredEnv('DB_USER'),
   password: getRequiredEnv('DB_PASSWORD'),
   database: getRequiredEnv('DB_NAME'),
-  entities: [User, Product, Order, OrderItem],
+  entities: [User, Product, Order, OrderItem, PostProcessingTask],
   migrations: [`${__dirname}/migrations/*.{js,ts}`],
   synchronize: false,
   logging: false,
