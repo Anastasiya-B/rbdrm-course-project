@@ -14,6 +14,7 @@ import { Product } from './product.entity';
 @Index('idx_users_lower_email', { synchronize: false })
 @Check('users_email_not_empty', 'length(trim(email)) > 0')
 @Check('users_full_name_not_empty', 'length(trim(full_name)) > 0')
+@Check('users_balance_non_negative', 'balance >= 0')
 export class User {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id!: string;
@@ -23,6 +24,13 @@ export class User {
 
   @Column({ name: 'full_name', type: 'text' })
   fullName!: string;
+
+  @Column({
+    type: 'integer',
+    default: 0,
+    comment: 'Balance in minor currency units',
+  })
+  balance!: number;
 
   @Column({
     name: 'created_at',
