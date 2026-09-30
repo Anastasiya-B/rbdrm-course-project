@@ -14,6 +14,9 @@ The project currently includes:
 - transactional checkout with concurrency protection
 - worker pool with `FOR UPDATE SKIP LOCKED`
 - retry handling for serialization failures and deadlocks
+- PgBouncer in transaction pooling mode
+- PostgreSQL custom-format backups
+- repeatable restore drill with RTO/RPO verification
 
 ## Install
 
@@ -30,21 +33,25 @@ npx tsc --noEmit
 
 ## PostgreSQL
 
-Start PostgreSQL:
+Start PostgreSQL and PgBouncer:
 
 ```bash
 docker compose up -d --wait
 ```
 
-Development database credentials are defined in `docker-compose.yml`:
+Development database credentials are defined in `docker-compose.yml`.
+
+The application connects to PostgreSQL through PgBouncer:
 
 ```text
 DB_HOST=127.0.0.1
-DB_PORT=5432
+DB_PORT=6432
 DB_USER=marketplace
 DB_PASSWORD=marketplace_password
 DB_NAME=marketplace
 ```
+
+PostgreSQL itself is still exposed on port `5432`, while application/database client traffic for the project uses PgBouncer on port `6432`.
 
 ## TypeORM data layer
 
@@ -292,6 +299,126 @@ Invariant passed: true
 
 The retry wrapper catches only PostgreSQL `40001` (serialization failure) and `40P01` (deadlock detected). These errors are transient and safe to retry from the beginning of the transaction. Business errors and unrelated database errors are propagated instead of being retried.
 
+## Data layer ops
+
+### PgBouncer
+
+PgBouncer runs in front of PostgreSQL and is exposed on port `6432`.
+
+Configuration:
+
+```text
+pgbouncer/pgbouncer.ini
+pgbouncer/userlist.txt
+```
+
+The pool uses:
+
+```ini
+pool_mode = transaction
+default_pool_size = 5
+max_client_conn = 200
+```
+
+Transaction mode is used because API requests perform short database transactions and do not need to keep one dedicated PostgreSQL connection for the lifetime of a client connection. This allows more client connections to share a smaller server-side connection pool.
+
+Transaction pooling does not preserve session state between transactions. Session-level settings such as `SET`, temporary tables tied to a session, and session-level advisory locks cannot be relied on across transactions. Features that depend on a stable backend session, including `LISTEN`/`NOTIFY` listeners, also need special handling. Prepared statements can require PgBouncer-specific support, so `max_prepared_statements` is configured.
+
+Verify PgBouncer:
+
+```bash
+PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d marketplace   -c "SELECT 1;"
+```
+
+Admin console:
+
+```bash
+PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d pgbouncer   -c "SHOW POOLS;"
+```
+
+### Backup
+
+Backups are stored in the local `backups/` directory and use PostgreSQL custom format (`pg_dump -Fc`).
+
+The backup script is:
+
+```text
+scripts/backup.sh
+```
+
+Run:
+
+```bash
+bash scripts/with-secrets.sh dev bash scripts/backup.sh
+```
+
+The script creates a dated artifact such as:
+
+```text
+backups/marketplace_2026-09-30_12-14-24.dump
+```
+
+The nightly backup schedule is stored in:
+
+```text
+backup.cron
+```
+
+Validate a backup:
+
+```bash
+LATEST_BACKUP="$(ls -t backups/*.dump | head -n 1)"
+
+docker run --rm   -v "$PWD/backups:/backups:ro"   postgres:16   pg_restore --list "/backups/$(basename "$LATEST_BACKUP")"
+```
+
+### Restore drill
+
+The restore drill is:
+
+```text
+scripts/restore-drill.sh
+```
+
+Run:
+
+```bash
+bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+```
+
+The drill:
+
+- selects the latest backup
+- creates a new temporary PostgreSQL container
+- creates a fresh Docker volume
+- restores the custom-format dump
+- compares the `orders` row count and `sum(total_amount)` before and after restore
+- prints `MATCH` when both values are identical
+- removes the temporary container and volume after the run
+
+Measured result:
+
+```text
+Source checksum: 10|8378600
+Restored checksum: 10|8378600
+Backup size: 24K
+RTO: 7 seconds
+MATCH
+```
+
+Detailed restore results and recovery objectives are documented in:
+
+```text
+RESTORE-DRILL.md
+```
+
+Current values:
+
+```text
+RTO: 7 seconds
+RPO: up to 24 hours
+```
+
 ## Secret wrapper
 
 Database commands are wrapped by:
@@ -316,14 +443,29 @@ demo:retry
 report
 ```
 
+Backup and restore commands use the same wrapper:
+
+```bash
+bash scripts/with-secrets.sh dev bash scripts/backup.sh
+bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+```
+
 ## Grading
 
 Run from a fresh clone:
 
 ```bash
 docker compose up -d --wait
-export DB_HOST=127.0.0.1 DB_PORT=5432 DB_USER=marketplace DB_PASSWORD=marketplace_password DB_NAME=marketplace
+
+export DB_HOST=127.0.0.1
+export DB_PORT=6432
+export DB_USER=marketplace
+export DB_PASSWORD=marketplace_password
+export DB_NAME=marketplace
+
+export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export SKIP_VAULT=1
+
 npm ci
 npx tsc --noEmit
 npm run build
@@ -338,6 +480,49 @@ npm run report
 npm run demo:race
 npm run demo:workers
 npm run demo:retry
+
+bash scripts/with-secrets.sh dev bash scripts/backup.sh
+bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+```
+
+Verify PgBouncer:
+
+```bash
+PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d marketplace   -c "SELECT 1;"
+```
+
+Check transaction pooling:
+
+```bash
+grep -E '^\s*pool_mode\s*=\s*transaction' pgbouncer/pgbouncer.ini
+```
+
+Check PgBouncer admin pools:
+
+```bash
+PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d pgbouncer   -c "SHOW POOLS;"
+```
+
+Check the connection contract:
+
+```bash
+grep -E '^(export[[:space:]]+)?(DATABASE_URL|DB_URL)=' .env.example
+```
+
+The host/port must point to PgBouncer on port `6432`.
+
+Check the backup schedule:
+
+```bash
+grep -cE '^(@(reboot|yearly|annually|monthly|weekly|daily|midnight|hourly)|([0-9*/,-]+[[:space:]]+){4}[0-9*/,-]+)[[:space:]]+.*backup' backup.cron
+```
+
+Expected: `1` or more.
+
+Check RTO/RPO documentation:
+
+```bash
+grep -iE 'RTO|RPO' RESTORE-DRILL.md
 ```
 
 Check that synchronization is not enabled:
@@ -426,8 +611,15 @@ src/
 ├── demo-workers.ts
 ├── demo-retry.ts
 └── report.ts
+pgbouncer/
+├── pgbouncer.ini
+└── userlist.txt
 scripts/
-└── with-secrets.sh
+├── with-secrets.sh
+├── backup.sh
+└── restore-drill.sh
+backup.cron
+RESTORE-DRILL.md
 db/
 ├── schema.sql
 ├── seed.sql
@@ -438,4 +630,4 @@ db/
 
 ## Submission
 
-Submit the Pull Request from the `hw-14` branch.
+Submit the Pull Request from the `hw-15` branch to `main`.
