@@ -18,5 +18,27 @@ services:
       retries: 15
       start_period: 5s
 
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: marketplace-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - '6432:6432'
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -h 127.0.0.1 -p 6432 -U marketplace -d marketplace',
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
 volumes:
   postgres_data:
