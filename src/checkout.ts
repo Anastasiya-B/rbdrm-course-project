@@ -1,6 +1,11 @@
 import { QueryResult, QueryRunner } from 'typeorm';
 
 import AppDataSource from './data-source';
+import {
+  ORDER_PLACED_EVENT_TYPE,
+  OrderPlacedEvent,
+} from './rabbitmq/order-placed.event';
+import { publishOrderPlaced } from './rabbitmq/order-placed.publisher';
 
 export interface CheckoutInput {
   userId: string;
@@ -131,6 +136,24 @@ async function executeCheckout(
   };
 }
 
+function createOrderPlacedEvent(
+  input: CheckoutInput,
+  result: CheckoutResult,
+): OrderPlacedEvent {
+  return {
+    eventId: `order.placed:${result.orderId}`,
+    type: ORDER_PLACED_EVENT_TYPE,
+    occurredAt: new Date().toISOString(),
+    data: {
+      orderId: result.orderId,
+      userId: input.userId,
+      productId: input.productId,
+      quantity: input.quantity,
+      totalAmount: result.totalAmount,
+    },
+  };
+}
+
 export async function checkout(input: CheckoutInput): Promise<CheckoutResult> {
   if (!Number.isInteger(input.quantity) || input.quantity <= 0) {
     throw new Error('Quantity must be a positive integer');
@@ -141,16 +164,22 @@ export async function checkout(input: CheckoutInput): Promise<CheckoutResult> {
   await queryRunner.connect();
   await queryRunner.startTransaction();
 
+  let result: CheckoutResult;
+
   try {
-    const result = await executeCheckout(queryRunner, input);
+    result = await executeCheckout(queryRunner, input);
 
     await queryRunner.commitTransaction();
-
-    return result;
   } catch (error) {
     await queryRunner.rollbackTransaction();
     throw error;
   } finally {
     await queryRunner.release();
   }
+
+  const event = createOrderPlacedEvent(input, result);
+
+  await publishOrderPlaced(event);
+
+  return result;
 }
