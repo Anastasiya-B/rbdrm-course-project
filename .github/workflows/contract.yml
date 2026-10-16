@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+      PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL || 'http://127.0.0.1:9292' }}
       PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
       PACT_CONSUMER: MarketplaceFrontend
       PACT_PROVIDER: MarketplaceAPI
@@ -31,6 +31,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Start Pact Broker
+        run: |
+          docker compose up -d --wait pact-broker-db pact-broker
 
       - name: TypeScript check
         run: npx tsc --noEmit
@@ -119,7 +123,7 @@ jobs:
           RESPONSE="$RESPONSE" node -e "
             const response = JSON.parse(process.env.RESPONSE);
 
-            if (response.deployable !== true) {
+            if (response.summary?.deployable !== true) {
               console.error('can-i-deploy failed');
               process.exit(1);
             }
