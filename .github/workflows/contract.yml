@@ -1,0 +1,128 @@
+name: Contract Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  contract:
+    name: Pact contract
+    runs-on: ubuntu-latest
+
+    env:
+      PACT_BROKER_URL: ${{ secrets.PACT_BROKER_URL }}
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+      PACT_CONSUMER: MarketplaceFrontend
+      PACT_PROVIDER: MarketplaceAPI
+      PACT_CONSUMER_VERSION: ${{ github.sha }}
+      PACT_PROVIDER_VERSION: ${{ github.sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Run integration tests
+        run: npm run test:integration
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      - name: Generate consumer Pact
+        run: npm run test:contract
+
+      - name: Publish Pact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AUTH_ARGS=()
+
+          if [ -n "${PACT_BROKER_TOKEN:-}" ]; then
+            AUTH_ARGS=(
+              -H "Authorization: Bearer $PACT_BROKER_TOKEN"
+            )
+          fi
+
+          curl \
+            --fail \
+            --show-error \
+            --silent \
+            -X PUT \
+            "$PACT_BROKER_URL/pacts/provider/$PACT_PROVIDER/consumer/$PACT_CONSUMER/version/$PACT_CONSUMER_VERSION" \
+            -H "Content-Type: application/json" \
+            "${AUTH_ARGS[@]}" \
+            --data-binary @pacts/MarketplaceFrontend-MarketplaceAPI.json
+
+      - name: Verify provider
+        run: npm run verify:provider
+
+      - name: Tag provider version as prod
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AUTH_ARGS=()
+
+          if [ -n "${PACT_BROKER_TOKEN:-}" ]; then
+            AUTH_ARGS=(
+              -H "Authorization: Bearer $PACT_BROKER_TOKEN"
+            )
+          fi
+
+          curl \
+            --fail \
+            --show-error \
+            --silent \
+            -X PUT \
+            "$PACT_BROKER_URL/pacticipants/$PACT_PROVIDER/versions/$PACT_PROVIDER_VERSION/tags/prod" \
+            -H "Content-Type: application/json" \
+            "${AUTH_ARGS[@]}"
+
+      - name: Can I deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          AUTH_ARGS=()
+
+          if [ -n "${PACT_BROKER_TOKEN:-}" ]; then
+            AUTH_ARGS=(
+              -H "Authorization: Bearer $PACT_BROKER_TOKEN"
+            )
+          fi
+
+          RESPONSE="$(
+            curl \
+              --fail \
+              --show-error \
+              --silent \
+              "${AUTH_ARGS[@]}" \
+              "$PACT_BROKER_URL/can-i-deploy?pacticipant=$PACT_CONSUMER&version=$PACT_CONSUMER_VERSION&to=prod"
+          )"
+
+          echo "$RESPONSE"
+
+          RESPONSE="$RESPONSE" node -e "
+            const response = JSON.parse(process.env.RESPONSE);
+
+            if (response.deployable !== true) {
+              console.error('can-i-deploy failed');
+              process.exit(1);
+            }
+
+            console.log('can-i-deploy: deployable=true');
+          "

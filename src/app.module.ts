@@ -4,6 +4,8 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { validateEnv } from './config/env.schema';
 import { DatabaseService } from './database.service';
+import { OrdersController } from './orders/orders.controller';
+import { OrdersService } from './orders/orders.service';
 
 @Module({
   imports: [
@@ -13,7 +15,7 @@ import { DatabaseService } from './database.service';
       validate: validateEnv,
     }),
   ],
-  controllers: [AppController],
-  providers: [DatabaseService],
+  controllers: [AppController, OrdersController],
+  providers: [DatabaseService, OrdersService],
 })
 export class AppModule {}
