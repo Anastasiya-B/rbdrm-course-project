@@ -4,6 +4,10 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { validateEnv } from './config/env.schema';
 import { DatabaseService } from './database.service';
+import { OrderEventsService } from './orders/order-events.service';
+import { OrdersController } from './orders/orders.controller';
+import { OrdersGateway } from './orders/orders.gateway';
+import { OrdersService } from './orders/orders.service';
 
 @Module({
   imports: [
@@ -13,7 +17,12 @@ import { DatabaseService } from './database.service';
       validate: validateEnv,
     }),
   ],
-  controllers: [AppController],
-  providers: [DatabaseService],
+  controllers: [AppController, OrdersController],
+  providers: [
+    DatabaseService,
+    OrderEventsService,
+    OrdersService,
+    OrdersGateway,
+  ],
 })
 export class AppModule {}
