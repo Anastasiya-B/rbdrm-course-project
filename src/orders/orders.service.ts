@@ -5,8 +5,10 @@ import {
 } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 
-import { ORDER_STATUSES, type OrderStatus } from '../entities/order.entity';
 import { DatabaseService } from '../database.service';
+import { ORDER_STATUSES, type OrderStatus } from '../entities/order.entity';
+import { insertOrderPlacedOutbox } from '../outbox/outbox.repository';
+import { toOrderPlacedEvent } from '../outbox/order-placed-event';
 import { OrderEventsService } from './order-events.service';
 
 interface CreateOrderItemInput {
@@ -38,6 +40,10 @@ interface OrderItemRow {
   quantity: number;
 }
 
+interface IdempotencyRow {
+  order_id: string | null;
+}
+
 export interface OrderResponse {
   id: number;
   items: Array<{
@@ -55,9 +61,16 @@ export class OrdersService {
     private readonly orderEventsService: OrderEventsService,
   ) {}
 
-  async create(input: CreateOrderInput): Promise<OrderResponse> {
+  async create(
+    input: CreateOrderInput,
+    idempotencyKey: string,
+  ): Promise<OrderResponse> {
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new BadRequestException('Order must contain at least one item');
+    }
+
+    if (!idempotencyKey.trim()) {
+      throw new BadRequestException('Idempotency-Key must not be empty');
     }
 
     const client = await this.databaseService.connect();
@@ -65,13 +78,55 @@ export class OrdersService {
     try {
       await client.query('BEGIN');
 
+      const reservationResult = await client.query(
+        `
+          INSERT INTO idempotency_keys (
+            idempotency_key
+          )
+          VALUES ($1)
+          ON CONFLICT (idempotency_key)
+          DO NOTHING
+          RETURNING idempotency_key
+        `,
+        [idempotencyKey],
+      );
+
+      const reserved = reservationResult.rowCount === 1;
+
+      if (!reserved) {
+        const existingResult = await client.query<IdempotencyRow>(
+          `
+            SELECT order_id
+            FROM idempotency_keys
+            WHERE idempotency_key = $1
+            FOR UPDATE
+          `,
+          [idempotencyKey],
+        );
+
+        const existing = existingResult.rows[0];
+
+        if (!existing?.order_id) {
+          throw new Error('Idempotency key exists without completed order');
+        }
+
+        const response = await this.findByIdWithClient(
+          client,
+          Number(existing.order_id),
+        );
+
+        await client.query('COMMIT');
+
+        return response;
+      }
+
       const userResult = await client.query<UserRow>(
         `
-            SELECT id
-            FROM users
-            ORDER BY id
-            LIMIT 1
-          `,
+          SELECT id
+          FROM users
+          ORDER BY id
+          LIMIT 1
+        `,
       );
 
       const user = userResult.rows[0];
@@ -94,12 +149,12 @@ export class OrdersService {
 
         const productResult = await client.query<ProductRow>(
           `
-              SELECT id, price
-              FROM products
-              WHERE id = $1
-                AND is_active = TRUE
-              LIMIT 1
-            `,
+            SELECT id, price
+            FROM products
+            WHERE id = $1
+              AND is_active = TRUE
+            LIMIT 1
+          `,
           [item.product_id],
         );
 
@@ -116,27 +171,31 @@ export class OrdersService {
 
       const orderResult = await client.query<OrderRow>(
         `
-            INSERT INTO orders (
-              user_id,
-              status,
-              total_amount
-            )
-            VALUES ($1, 'created', $2)
-            RETURNING id, status, total_amount
-          `,
+          INSERT INTO orders (
+            user_id,
+            status,
+            total_amount
+          )
+          VALUES ($1, 'created', $2)
+          RETURNING id, status, total_amount
+        `,
         [user.id, totalAmount],
       );
 
       const order = orderResult.rows[0];
 
+      if (!order) {
+        throw new Error('Failed to create order');
+      }
+
       for (const item of input.items) {
         const productResult = await client.query<ProductRow>(
           `
-              SELECT id, price
-              FROM products
-              WHERE id = $1
-              LIMIT 1
-            `,
+            SELECT id, price
+            FROM products
+            WHERE id = $1
+            LIMIT 1
+          `,
           [item.product_id],
         );
 
@@ -161,6 +220,25 @@ export class OrdersService {
           [order.id, item.product_id, item.quantity, Number(product.price)],
         );
       }
+
+      const event = toOrderPlacedEvent({
+        eventId: `order.placed:${order.id}`,
+        orderId: Number(order.id),
+        userId: Number(user.id),
+        items: input.items,
+        totalAmount: Number(order.total_amount),
+      });
+
+      await insertOrderPlacedOutbox(client, event);
+
+      await client.query(
+        `
+          UPDATE idempotency_keys
+          SET order_id = $2
+          WHERE idempotency_key = $1
+        `,
+        [idempotencyKey, order.id],
+      );
 
       await client.query('COMMIT');
 
@@ -257,6 +335,47 @@ export class OrdersService {
     return result.rowCount === 1;
   }
 
+  private async findByIdWithClient(
+    client: PoolClient,
+    id: number,
+  ): Promise<OrderResponse> {
+    const orderResult = await client.query<OrderRow>(
+      `
+        SELECT id, status, total_amount
+        FROM orders
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [id],
+    );
+
+    const order = orderResult.rows[0];
+
+    if (!order) {
+      throw new NotFoundException(`Order ${id} not found`);
+    }
+
+    const itemsResult = await client.query<OrderItemRow>(
+      `
+          SELECT product_id, quantity
+          FROM order_items
+          WHERE order_id = $1
+          ORDER BY id
+        `,
+      [id],
+    );
+
+    return {
+      id: Number(order.id),
+      items: itemsResult.rows.map(item => ({
+        product_id: Number(item.product_id),
+        quantity: item.quantity,
+      })),
+      total_cents: Number(order.total_amount),
+      status: order.status,
+    };
+  }
+
   private isOrderStatus(value: string): value is OrderStatus {
     return (ORDER_STATUSES as readonly string[]).includes(value);
   }
@@ -265,7 +384,7 @@ export class OrdersService {
     try {
       await client.query('ROLLBACK');
     } catch {
-      // Preserve the original transaction error.
+      // Preserve original transaction error.
     }
   }
 }
