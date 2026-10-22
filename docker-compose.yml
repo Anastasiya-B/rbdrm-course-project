@@ -16,7 +16,6 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
-
   pgbouncer:
     image: edoburu/pgbouncer:latest
     container_name: marketplace-pgbouncer
@@ -38,7 +37,21 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
-
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    container_name: marketplace-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_running']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
   pact-broker-db:
     image: postgres:16-alpine
     container_name: marketplace-pact-broker-db
@@ -54,7 +67,6 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
-
   pact-broker:
     image: pactfoundation/pact-broker:latest
     container_name: marketplace-pact-broker
@@ -79,7 +91,7 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
-
 volumes:
   postgres_data:
+  rabbitmq_data:
   pact_broker_data:

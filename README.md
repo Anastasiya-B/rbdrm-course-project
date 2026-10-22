@@ -2,52 +2,55 @@
 
 Course project for Node.js / NestJS.
 
-The project currently includes:
+## Current scope
 
 - OpenAPI contract and runtime validation
 - typed configuration and secret handling
-- PostgreSQL schema and query optimization
-- TypeORM entities, relations and migrations
-- deterministic seed data
-- N+1 demonstration and fix
-- QueryBuilder reporting
+- PostgreSQL + TypeORM migrations and deterministic seed
+- PgBouncer in transaction pooling mode
 - transactional checkout with concurrency protection
 - worker pool with `FOR UPDATE SKIP LOCKED`
 - retry handling for serialization failures and deadlocks
-- PgBouncer in transaction pooling mode
-- PostgreSQL custom-format backups
-- repeatable restore drill with RTO/RPO verification
-- integration tests against real PostgreSQL with Testcontainers
-- E2E tests through the full Nest application with Supertest
-- Pact consumer/provider contract verification
-- Pact Broker and can-i-deploy contract gate in CI
-- Socket.IO order-status notifications with per-order rooms
-- SSE order-status stream with replay via `Last-Event-ID`
+- integration, E2E and Pact contract tests
+- Pact Broker and `can-i-deploy` CI gate
+- Socket.IO order-status rooms
+- SSE order-status stream with `Last-Event-ID` replay
+- RabbitMQ `order.placed` events with manual ack, prefetch, DLQ and persistent deduplication
 
-## Install
+## Install and build
 
 ```bash
 npm ci
+npx tsc --noEmit
+npm run build
 ```
 
-## Build
+Start:
 
 ```bash
-npm run build
-npx tsc --noEmit
+node dist/main.js
 ```
 
-## PostgreSQL
-
-Start PostgreSQL and PgBouncer:
+## Local infrastructure
 
 ```bash
 docker compose up -d --wait
 ```
 
-Development database credentials are defined in `docker-compose.yml`.
+| Service             | Address                  |
+| ------------------- | ------------------------ |
+| Marketplace API     | `http://localhost:3000`  |
+| PostgreSQL          | `127.0.0.1:5432`         |
+| PgBouncer           | `127.0.0.1:6432`         |
+| RabbitMQ AMQP       | `amqp://127.0.0.1:5672`  |
+| RabbitMQ Management | `http://127.0.0.1:15672` |
+| Pact Broker         | `http://127.0.0.1:9292`  |
 
-The application connects to PostgreSQL through PgBouncer:
+RabbitMQ development credentials: `app/app`.
+
+## Database
+
+The application uses PgBouncer on port `6432`.
 
 ```text
 DB_HOST=127.0.0.1
@@ -57,167 +60,17 @@ DB_PASSWORD=marketplace_password
 DB_NAME=marketplace
 ```
 
-PostgreSQL itself is still exposed on port `5432`, while application/database client traffic for the project uses PgBouncer on port `6432`.
-
-## TypeORM data layer
-
-The HW12 SQL schema is represented by TypeORM entities:
-
-```text
-src/entities/
-├── user.entity.ts
-├── product.entity.ts
-├── order.entity.ts
-├── order-item.entity.ts
-└── post-processing-task.entity.ts
-```
-
-`order_items` is an explicit join entity because the relation contains its own data: `quantity`, `unit_price` and timestamps.
-
-Money values in the TypeORM model are stored as integers in minor currency units:
-
-```text
-249900 = 2499.00
-129900 = 1299.00
-```
-
-### Relations and onDelete
-
-The main relations are:
-
-- `User -> Product`
-- `User -> Order`
-- `Order -> OrderItem`
-- `Product -> OrderItem`
-- `Order -> PostProcessingTask`
-
-&#x20; Deletion behavior:
-
-- `Order -> OrderItem` and `Order -> PostProcessingTask` use `CASCADE` because these rows belong to the order.
-- user/product parent relations use `RESTRICT` to protect referenced historical data.
-
-## Migrations
-
-TypeORM schema synchronization is disabled:
-
-```ts
-synchronize: false;
-```
-
-The schema is created and changed only through migrations:
-
 ```bash
 npm run build
 npm run migrate
-npm run migrate:show
-npm run migrate:revert
-npm run migrate
-```
-
-The initial migration creates the marketplace tables, foreign keys, checks and HW12 indexes.
-
-The HW14 migration adds:
-
-- `users.balance`
-- `post_processing_tasks`
-- queue constraints and indexes
-
-&#x20; Detailed HW12 query plans remain in:
-
-```text
-db/OPTIMIZATIONS.md
-```
-
-## Seed
-
-The seed is deterministic and idempotent:
-
-```bash
-npm run build
-npm run seed
 npm run seed
 ```
 
-Check row counts:
+Main tables: `users`, `products`, `orders`, `order_items`, `post_processing_tasks`. HW19 adds `processed_order_events` for persistent RabbitMQ deduplication.
 
-```bash
-docker compose exec postgres psql -U marketplace -d marketplace -c "SELECT
-&#x20; (SELECT count(*) FROM users) AS users,
-&#x20; (SELECT count(*) FROM products) AS products,
-&#x20; (SELECT count(*) FROM orders) AS orders,
-&#x20; (SELECT count(*) FROM order_items) AS order_items;"
-```
+### Checkout and concurrency
 
-Expected counts after either run:
-
-```text
-users:       10
-products:    10
-orders:      10
-order_items: 14
-```
-
-The seed also restores buyer balances and the race-test product stock so concurrency demos are repeatable.
-
-## N+1 demonstration
-
-Run:
-
-```bash
-npm run build
-npm run demo:nplus1
-```
-
-The demo loads:
-
-```text
-order -> items -> product
-```
-
-Measured result:
-
-```text
-N = 5: before 14, after 1
-N = 10: before 25, after 1
-```
-
-The naive version loads items per order and products per item. The optimized version uses `leftJoinAndSelect` for both relation levels, so the graph is loaded with one SQL query.
-
-## QueryBuilder report
-
-Run:
-
-```bash
-npm run build
-npm run report
-```
-
-The report calculates:
-
-- number of orders
-- units sold
-- revenue in minor currency units
-- cancelled orders excluded
-
-&#x20; It uses `createQueryBuilder().getRawMany()` with `JOIN`, `GROUP BY` and aggregate functions.
-
-&#x20; Verify grouping:
-
-```bash
-grep -rniE "\\\\.(add)?groupBy\\\\(" src/
-```
-
-### Repository vs QueryBuilder
-
-Repository methods are used for ordinary CRUD and simple filters when the result maps directly to entities.
-
-QueryBuilder is used for joins, aggregation, grouping, calculated columns and other SQL that cannot be expressed clearly with `find()`.
-
-## Concurrency
-
-### Transactional checkout
-
-Checkout runs in a single transaction and performs:
+Checkout runs in one transaction:
 
 - atomic stock decrement
 - buyer balance decrement
@@ -225,445 +78,46 @@ Checkout runs in a single transaction and performs:
 - order item creation
 - post-processing task creation
 
-&#x20; Stock protection uses an atomic statement:
+Stock protection:
 
 ```sql
 UPDATE products
 SET stock_quantity = stock_quantity - $1
 WHERE id = $2
-&#x20; AND stock_quantity >= $1
-RETURNING id, price, stock_quantity
+  AND stock_quantity >= $1
+RETURNING id, price, stock_quantity;
 ```
 
-This approach was chosen instead of a separate read-modify-write flow because PostgreSQL checks available stock and performs the decrement atomically. Concurrent requests therefore cannot oversell the product. If stock or balance is insufficient, the whole transaction is rolled back.
-
-### Race demo
-
-Run:
+Useful demos:
 
 ```bash
 npm run demo:race
-```
-
-Measured result:
-
-```text
-Attempts: 50
-Successful: 10
-Final stock: 0
-Negative stock rows: 0
-Invariant passed: true
-```
-
-The test runs 50 checkout calls concurrently against one product with initial stock `10` and quantity `1`.
-
-### Worker pool
-
-Run:
-
-```bash
 npm run demo:workers
-```
-
-Workers claim queue rows with `FOR UPDATE SKIP LOCKED` and keep the transaction open while processing the task.
-
-Measured result:
-
-```text
-worker-1: 4
-worker-2: 3
-worker-3: 3
-Total tasks: 10
-Processed once: 10
-Processed twice: 0
-Elapsed: 861 ms
-Sequential estimate: 2000 ms
-Active workers: 3
-Invariant passed: true
-```
-
-The worker pool is faster than sequential processing and every task is committed exactly once.
-
-### Retry pattern
-
-Run:
-
-```bash
 npm run demo:retry
 ```
 
-Measured result:
-
-```text
-transaction-2: caught 40001, retry 1/5 after 50 ms
-Initial balance: 1000000
-Increment per transaction: 1000
-Expected final balance: 1002000
-Actual final balance: 1002000
-Invariant passed: true
-```
-
-The retry wrapper catches only PostgreSQL `40001` (serialization failure) and `40P01` (deadlock detected). These errors are transient and safe to retry from the beginning of the transaction. Business errors and unrelated database errors are propagated instead of being retried.
-
-## Data layer ops
-
-### PgBouncer
-
-PgBouncer runs in front of PostgreSQL and is exposed on port `6432`.
-
-Configuration:
-
-```text
-pgbouncer/pgbouncer.ini
-pgbouncer/userlist.txt
-```
-
-The pool uses:
-
-```ini
-pool_mode = transaction
-default_pool_size = 5
-max_client_conn = 200
-```
-
-Transaction mode is used because API requests perform short database transactions and do not need to keep one dedicated PostgreSQL connection for the lifetime of a client connection. This allows more client connections to share a smaller server-side connection pool.
-
-Transaction pooling does not preserve session state between transactions. Session-level settings such as `SET`, temporary tables tied to a session, and session-level advisory locks cannot be relied on across transactions. Features that depend on a stable backend session, including `LISTEN`/`NOTIFY` listeners, also need special handling. Prepared statements can require PgBouncer-specific support, so `max_prepared_statements` is configured.
-
-Verify PgBouncer:
-
-```bash
-PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d marketplace   -c "SELECT 1;"
-```
-
-Admin console:
-
-```bash
-PGPASSWORD=marketplace_password psql   -h 127.0.0.1   -p 6432   -U marketplace   -d pgbouncer   -c "SHOW POOLS;"
-```
-
-### Backup
-
-Backups are stored in the local `backups/` directory and use PostgreSQL custom format (`pg_dump -Fc`).
-
-The backup script is:
-
-```text
-scripts/backup.sh
-```
-
-Run:
-
-```bash
-bash scripts/with-secrets.sh dev bash scripts/backup.sh
-```
-
-The script creates a dated artifact such as:
-
-```text
-backups/marketplace_2026-09-30_12-14-24.dump
-```
-
-The nightly backup schedule is stored in:
-
-```text
-backup.cron
-```
-
-Validate a backup:
-
-```bash
-LATEST_BACKUP="$(ls -t backups/*.dump | head -n 1)"
-docker run --rm   -v "$PWD/backups\:/backups:ro"   postgres:16   pg_restore --list "/backups/$(basename "$LATEST_BACKUP")"
-```
-
-### Restore drill
-
-The restore drill is:
-
-```text
-scripts/restore-drill.sh
-```
-
-Run:
-
-```bash
-bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
-```
-
-The drill:
-
-- selects the latest backup
-- creates a new temporary PostgreSQL container
-- creates a fresh Docker volume
-- restores the custom-format dump
-- compares the `orders` row count and `sum(total_amount)` before and after restore
-- prints `MATCH` when both values are identical
-- removes the temporary container and volume after the run
-
-&#x20; Measured result:
-
-```text
-Source checksum: 10|8378600
-Restored checksum: 10|8378600
-Backup size: 24K
-RTO: 7 seconds
-MATCH
-```
-
-Detailed restore results and recovery objectives are documented in:
-
-```text
-RESTORE-DRILL.md
-```
-
-Current values:
-
-```text
-RTO: 7 seconds
-RPO: up to 24 hours
-```
+Workers use `FOR UPDATE SKIP LOCKED`. Retry logic handles PostgreSQL `40001` and `40P01`.
 
 ## Testing
 
-HW16 adds three test layers: integration tests against a real PostgreSQL container, E2E tests through the full Nest application, and Pact contract tests for the Marketplace API.
-
-### Integration tests
-
-Run:
-
 ```bash
 npm run test:integration
-```
-
-The suite uses `@testcontainers/postgresql` with `postgres:16-alpine`. The PostgreSQL container is created directly from the tests, migrations are applied automatically, and repositories execute real SQL instead of mocks.
-
-The integration suite covers two repositories with three tests each:
-
-```text
-ProductRepository: 3 tests
-UserRepository:    3 tests
-Total:             6 tests
-```
-
-The suite includes PostgreSQL unique constraint (`23505`), foreign-key constraint (`23503`), `JOIN` behavior and `ON CONFLICT DO NOTHING`.
-
-Test data builders are located in:
-
-```text
-test/integration/testkit/builders.ts
-```
-
-#### Isolation strategy
-
-Integration tests use a transaction-per-test strategy. Each test gets a dedicated PostgreSQL client, starts `BEGIN`, and finishes with `ROLLBACK`, so data created by one test is not committed into the next test.
-
-This strategy is fast, deterministic, and avoids manual cleanup. Repeated runs stay green without resetting the database:
-
-```bash
-npm run test:integration && npm run test:integration
-```
-
-### E2E tests
-
-Run:
-
-```bash
 npm run test:e2e
-```
-
-The E2E suite starts a real PostgreSQL Testcontainer and creates the full Nest application with `Test.createTestingModule({ imports: [AppModule] })`. No application providers are replaced with mocks.
-
-Covered scenarios:
-
-```text
-POST /orders → 201
-GET /orders/{id} → 200
-GET /orders/999999 → 404
-```
-
-### Pact consumer contract
-
-Run:
-
-```bash
 npm run test:contract
-```
-
-Consumer:
-
-```text
-MarketplaceFrontend
-```
-
-Provider:
-
-```text
-MarketplaceAPI
-```
-
-Provider state:
-
-```text
-order 1 exists
-```
-
-The interaction verifies:
-
-```text
-GET /orders/1
-```
-
-Generated Pact:
-
-```text
-pacts/MarketplaceFrontend-MarketplaceAPI.json
-```
-
-The Pact path `/orders/1` matches the OpenAPI path `/orders/{id}`.
-
-### Pact provider verification
-
-Run locally against the generated Pact:
-
-```bash
 npm run verify:provider
 ```
 
-The verifier starts the real Nest application against a PostgreSQL Testcontainer. `stateHandlers` seed the required user, product, order and order item before Pact executes the interaction.
-
-Successful verification includes:
-
-```text
-has a matching body (OK)
-```
-
-Provider-state setup uses repeatable `INSERT ... ON CONFLICT` statements.
-
-### Pact Broker
-
-The local Pact Broker is part of `docker-compose.yml` and is exposed on:
-
-```text
-http://127.0.0.1:9292
-```
-
-Start the stack:
-
-```bash
-docker compose up -d --wait
-```
-
-Local broker variables:
-
-```bash
-export PACT_BROKER_URL=http://127.0.0.1:9292
-export PACT_CONSUMER=MarketplaceFrontend
-export PACT_PROVIDER=MarketplaceAPI
-export PACT_CONSUMER_VERSION=hw16-consumer-1
-export PACT_PROVIDER_VERSION=hw16-provider-1
-```
-
-Publish the Pact:
-
-```bash
-curl -i   -X PUT   "$PACT_BROKER_URL/pacts/provider/$PACT_PROVIDER/consumer/$PACT_CONSUMER/version/$PACT_CONSUMER_VERSION"   -H 'Content-Type: application/json'   --data-binary @pacts/MarketplaceFrontend-MarketplaceAPI.json
-```
-
-Expected HTTP status:
-
-```text
-201
-```
-
-The main local provider-verification path uses the existing secret wrapper:
-
-```bash
-bash scripts/with-secrets.sh dev npm run verify:provider
-```
-
-For grading, the broker URL can be passed directly because the grader has no access to the secret storage:
-
-```bash
-PACT_BROKER_URL=http://127.0.0.1:9292 PACT_PROVIDER_VERSION=hw16-provider-1 npm run verify:provider
-```
-
-When a broker URL is present, provider verification uses `publishVerificationResult: true`.
-
-### can-i-deploy gate
-
-Before any provider version is tagged as `prod`, the gate is intentionally unknown.
-
-Relevant response fields before the `prod` tag:
-
-```json
-{
-&#x20; "deployable": null,
-&#x20; "unknown": 1
-}
-```
-
-Tag the verified provider version:
-
-```bash
-curl -i   -X PUT   "$PACT_BROKER_URL/pacticipants/$PACT_PROVIDER/versions/$PACT_PROVIDER_VERSION/tags/prod"   -H 'Content-Type: application/json'
-```
-
-Run the same gate again:
-
-```bash
-curl   "$PACT_BROKER_URL/can-i-deploy?pacticipant=$PACT_CONSUMER&version=$PACT_CONSUMER_VERSION&to=prod"
-```
-
-Relevant response after the `prod` tag:
-
-```json
-{
-&#x20; "deployable": true
-}
-```
-
-This `unknown → true` transition proves that the deployment gate is based on a verified provider version.
-
-### Contract CI job
-
-Workflow:
-
-```text
-.github/workflows/contract.yml
-```
-
-The `contract` job runs:
-
-```text
-install → compile → integration → E2E → consumer Pact → publish → verify → can-i-deploy
-```
-
-`PACT_BROKER_URL` and `PACT_BROKER_TOKEN` come from GitHub Actions secrets. The token is not stored in the repository.
-
-Jest explicitly uses:
-
-```js
-reporters: ['default'];
-```
-
-so `PASS` lines and test names are printed consistently.
+Integration tests use PostgreSQL Testcontainers and real SQL. E2E tests start the full Nest app. Pact verifies the `MarketplaceFrontend -> MarketplaceAPI` contract. CI includes Pact Broker and `can-i-deploy`.
 
 ## Realtime order status
 
-HW18 adds real-time order status notifications through WebSocket and Server-Sent Events.
-
 ### WebSocket
 
-The Socket.IO gateway exposes a `join` event. A client sends an order id and is added to `orders:<id>` only when that order belongs to the authenticated user represented by `socket.handshake.auth.userId`.
-
-Order status changes are emitted from the business service through the shared order-events service. The gateway forwards `order.status` only to the matching room with `server.to(...)`; events are not broadcast globally.
-
-Run the isolation demo:
+Socket.IO clients send `join` with an order id. A socket joins `orders:<id>` only after ownership validation.
 
 ```bash
 node scripts/realtime-demo.mjs
-echo "exit=$?"
+node scripts/realtime-demo.mjs --same-room
 ```
 
 Expected:
@@ -671,63 +125,24 @@ Expected:
 ```text
 A_RECEIVED=1
 B_RECEIVED=0
-exit=0
 ```
 
-Run the same-room control:
-
-```bash
-node scripts/realtime-demo.mjs --same-room
-echo "exit=$?"
-```
-
-Expected:
+Same-room:
 
 ```text
 A_RECEIVED=1
 B_RECEIVED=1
-exit=0
 ```
 
-The demo waits for both Socket.IO connections and `join` acknowledgements before changing order A.
+### SSE
 
-### Server-Sent Events
-
-Order events are available at:
+Endpoint:
 
 ```text
 GET /orders/:id/events
 ```
 
-The endpoint returns `Content-Type: text/event-stream`. Every `order.status` event contains an increasing `id`, an `event: order.status` field and JSON data.
-
-Verify the SSE header:
-
-```bash
-curl -sN --max-time 2 -D - -o /dev/null http://localhost:3000/orders/1/events | grep -i '^content-type'
-```
-
-Expected:
-
-```text
-content-type: text/event-stream
-```
-
-Open the stream:
-
-```bash
-curl -sN http://localhost:3000/orders/1/events
-```
-
-Change the order status from another terminal:
-
-```bash
-curl -X PATCH http://localhost:3000/orders/1/status \
-  -H 'Content-Type: application/json' \
-  -d '{"status":"paid"}'
-```
-
-Example event:
+Event format:
 
 ```text
 id: 1
@@ -735,66 +150,146 @@ event: order.status
 data: {"orderId":1,"status":"paid","occurredAt":"..."}
 ```
 
-The in-memory event buffer supports replay with `Last-Event-ID`. After producing at least four events:
-
-```bash
-curl -sN --max-time 2 \
-  -H 'Last-Event-ID: 3' \
-  http://localhost:3000/orders/1/events \
-  | grep '^id:' \
-  | head -1
-```
-
-The first returned event id must be greater than `3`.
+`Last-Event-ID` replays buffered events with larger ids.
 
 ## Trade-offs: WebSocket vs SSE
 
-| Criterion               | WebSocket                                                                  | SSE                                                               |
-| ----------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| Communication direction | Bidirectional                                                              | Server to client                                                  |
-| Reconnect and recovery  | Reconnect is supported; missed-event replay must be implemented explicitly | Browser reconnect is built in and `Last-Event-ID` supports replay |
-| Infrastructure          | Requires WebSocket-aware proxy/load-balancer support                       | Uses standard HTTP streaming                                      |
-| Connection model        | Persistent full-duplex connection                                          | Persistent HTTP response                                          |
-| Best fit                | Chats, games and interactive real-time flows                               | Notifications, feeds and status updates                           |
+| Criterion      | WebSocket                                 | SSE                                       |
+| -------------- | ----------------------------------------- | ----------------------------------------- |
+| Direction      | Bidirectional                             | Server to client                          |
+| Reconnect      | Supported, replay is custom               | Built in, `Last-Event-ID` supports replay |
+| Infrastructure | Needs WebSocket-aware proxy/load balancer | Standard HTTP streaming                   |
+| Best fit       | Interactive realtime flows                | Notifications and status feeds            |
 
-For order-status notifications, SSE is the simpler production choice when clients only need server-to-client updates because reconnect and replay are straightforward. WebSocket is preferable when the client must also send frequent real-time messages over the same connection.
+For order-status notifications, SSE is simpler when the client only receives updates. WebSocket is preferable for frequent bidirectional communication.
 
-The current implementation is single-instance and uses in-memory rooms and event buffering. With two or more application instances, clients connected to different instances would not share Socket.IO room state or events; use the Socket.IO Redis adapter and shared infrastructure for cross-instance delivery, and move replay storage out of process if replay must survive instance changes or restarts.
+With multiple app instances, Socket.IO rooms and in-memory replay are not shared. Use the Socket.IO Redis adapter and shared replay storage.
 
-## Secret wrapper
+## Async-події через RabbitMQ
 
-Database commands are wrapped by:
+HW19 adds a durable broker path for `order.placed`.
+
+### Topology
+
+- topic exchange: `shop.events`
+- routing key: `order.placed`
+- work queue: `shop.order.placed`
+- DLX: `shop.events.dlx`
+- DLQ: `shop.order.placed.dlq`
+- queue type: quorum
+- prefetch: `10`
+
+Topology is declared by the consumer/bootstrap side. The producer only publishes.
+
+### Event contract
 
 ```text
-scripts/with-secrets.sh
+eventId
+type
+occurredAt
+data.orderId
+data.userId
+data.productId
+data.quantity
+data.totalAmount
 ```
 
-The normal development path uses the configured secret-storage flow. For CI/grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without access to the developer's vault.
-
-Database-related npm scripts:
+Stable event id:
 
 ```text
-migrate
-migrate:show
-migrate:revert
-seed
-demo:nplus1
-demo:race
-demo:workers
-demo:retry
-report
+order.placed:<orderId>
 ```
 
-Backup and restore commands use the same wrapper:
+The producer uses a confirm channel and waits for broker confirms.
+
+### Delivery semantics
+
+The consumer uses `noAck=false` and acknowledges only after the effect.
+
+This is **at-least-once delivery**, not exactly-once delivery. A message may be redelivered if the effect completed but the acknowledgement did not reach RabbitMQ.
+
+The exactly-once result comes from at-least-once delivery plus an idempotent consumer effect. Processed event ids are persisted in PostgreSQL in `processed_order_events`, so deduplication survives restarts and works across instances.
+
+There is still a failure window between the checkout database commit and RabbitMQ publish. HW19 does not make PostgreSQL and RabbitMQ atomic; transactional outbox will close this gap in HW22. The processed-event marker and a future real business effect should also be committed in one DB transaction.
+
+### Prefetch
+
+The consumer uses:
+
+```text
+prefetch=10
+```
+
+Even with a conservative 1 second processing time, `10 × 1s = 10s`, far below the default 30 minute `consumer_timeout`.
+
+### DLQ
+
+The work queue uses `x-dead-letter-exchange` and `x-dead-letter-routing-key`. Invalid messages are rejected with `requeue=false`. The demo reads `x-death` and verifies the reason.
+
+### Demo results
+
+Happy path:
 
 ```bash
-bash scripts/with-secrets.sh dev bash scripts/backup.sh
-bash scripts/with-secrets.sh dev bash scripts/restore-drill.sh
+npm run demo:publish
 ```
+
+```text
+published=5
+delivered=5
+effect=5
+acked=5
+dlq=0
+prefetch=10
+```
+
+DLQ:
+
+```bash
+npm run demo:dlq
+```
+
+```text
+rejected=1
+work=0
+dlq=1
+dlq-reason=rejected
+effect=0
+```
+
+Duplicate:
+
+```bash
+npm run demo:duplicate
+```
+
+```text
+deliveries=2
+effect=1
+skipped=1
+```
+
+The duplicate demo applies the effect once and uses `nack(..., requeue=true)` to force redelivery. The repeated event is skipped by persistent deduplication.
+
+## Secrets
+
+Commands that need database or broker credentials use `scripts/with-secrets.sh`.
+
+For grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without vault access.
+
+RabbitMQ demo scripts:
+
+```text
+demo:publish
+demo:dlq
+demo:duplicate
+```
+
+No live connection strings are stored in tracked `.env` files.
 
 ## Grading
 
-Run from a fresh clone with Docker running:
+Run from the repository root:
 
 ```bash
 docker compose up -d --wait
@@ -803,268 +298,116 @@ export DB_PORT=6432
 export DB_USER=marketplace
 export DB_PASSWORD=marketplace_password
 export DB_NAME=marketplace
-export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export DB_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
+export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
+export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
 npm ci
 npx tsc --noEmit
-npm run test:integration
+npm run build
+npm run migrate
+npm run seed
+```
+
+HW19:
+
+```bash
+npm run demo:publish
+npm run demo:dlq
+npm run demo:duplicate
+```
+
+Expected:
+
+```text
+demo:publish
+published=5
+effect=5
+dlq=0
+prefetch=10
+
+demo:dlq
+work=0
+dlq=1
+dlq-reason=rejected
+effect=0
+
+demo:duplicate
+deliveries=2
+effect=1
+```
+
+Verify wrappers:
+
+```bash
+node -e "const s=require('./package.json').scripts;const bad=['demo:publish','demo:dlq','demo:duplicate'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+```
+
+Verify DLX:
+
+```bash
+grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs'   --include='*.json' --include='*.sh' --include='*.yml' --include='*.yaml' --include='*.sql'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "dead[ _-]*letter[ _-]*(exchange|routing)" .
+```
+
+Verify prefetch:
+
+```bash
+grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.json'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "prefetch|basic[._-]?qos" .
+```
+
+Verify tracked env files:
+
+```bash
+for f in $(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '\.(example|sample|template|dist)$'); do
+  grep -lE '=(amqps?|postgres(ql)?|redis|https?)://[^ ]*:[^ @]+@' "$f"
+done
+```
+
+Expected: no output.
+
+Previous checks:
+
+```bash
 npm run test:integration
 npm run test:e2e
 npm run test:contract
 npm run verify:provider
-```
-
-Verify Testcontainers:
-
-```bash
-grep -rn "PostgreSqlContainer" test/ src/
-```
-
-Verify constraint coverage:
-
-```bash
-grep -rniE "duplicate key|unique|2350[0-9]|foreign key|constraint" test/ src/
-```
-
-Verify the Jest reporter:
-
-```bash
-grep -n "reporters" jest.config.*
-```
-
-Expected configuration includes:
-
-```text
-reporters: ['default']
-```
-
-Verify the E2E negative case:
-
-```bash
-grep -rnE "\b(400|404|409|422)\b|HttpStatus\\.(BAD_REQUEST|NOT_FOUND|CONFLICT|UNPROCESSABLE_ENTITY)" test/e2e/
-```
-
-Verify the generated Pact and provider state:
-
-```bash
-ls pacts/*.json
-grep providerStates pacts/*.json
-```
-
-Verify provider output:
-
-```bash
-npm run verify:provider 2>&1   | sed -E $'s/\x1b\\\\[[0-9;]*m//g'   | grep -F "has a matching body (OK)"
-```
-
-Expected:
-
-```text
-has a matching body (OK)
-```
-
-Verify that the Pact path exists in the OpenAPI specification:
-
-```bash
-node -e 'const p=require("./pacts/MarketplaceFrontend-MarketplaceAPI.json");const spec=require("fs").readFileSync("openapi/openapi.yaml","utf8");const sp=[...spec.matchAll(/^\s+(\\/\S*):\s*$/gm)].map(m=>m[1]);const seg=s=>s.split("?")[0].replace(/\\/+$/,"").split("/");const fit=(a,b)=>{a=seg(a);b=seg(b);return a.length===b.length&&a.every((x,i)=>/^\\{[^}]+\\}$/.test(x)?b[i]!=="":x===b[i])};const bad=p.interactions.filter(i=>!sp.some(x=>fit(x,i.request.path)));console.log(bad.length?"НЕМАЄ У СПЕЦІ: "+bad.map(i=>i.request.path).join(", "):"OK");process.exit(bad.length?1:0)'
-```
-
-Expected:
-
-```text
-OK
-```
-
-### Realtime grading
-
-Start the application:
-
-```bash
-npm run build
-node dist/main.js
-```
-
-In another terminal, verify room isolation:
-
-```bash
 node scripts/realtime-demo.mjs
-echo "exit=$?"
 node scripts/realtime-demo.mjs --same-room
-echo "exit=$?"
 ```
-
-Expected:
-
-```text
-A_RECEIVED=1
-B_RECEIVED=0
-exit=0
-A_RECEIVED=1
-B_RECEIVED=1
-exit=0
-```
-
-Verify the SSE content type:
-
-```bash
-curl -sN --max-time 2 -D - -o /dev/null http://localhost:3000/orders/1/events | grep -i '^content-type'
-```
-
-Verify SSE replay after producing at least four order-status events:
-
-```bash
-curl -sN --max-time 2 \
-  -H 'Last-Event-ID: 3' \
-  http://localhost:3000/orders/1/events \
-  | grep '^id:' \
-  | head -1
-```
-
-The returned id must be greater than `3`.
-
-Verify the trade-off table:
-
-```bash
-sec=$(awk 'tolower($0) ~ /^#+ .*trade[ -]?off/{f=1;next} f && /^#+ /{exit} f' README.md)
-printf '%s\n' "$sec" | grep -cE '^ *\|? *:?-{3,}'
-printf '%s\n' "$sec" | grep -c '|'
-```
-
-The first result must be at least `1`; the second must be at least `4`.
-
-### Local Pact Broker gate
-
-```bash
-export PACT_BROKER_URL=http://127.0.0.1:9292
-export PACT_CONSUMER=MarketplaceFrontend
-export PACT_PROVIDER=MarketplaceAPI
-export PACT_CONSUMER_VERSION=hw16-consumer-1
-export PACT_PROVIDER_VERSION=hw16-provider-1
-```
-
-Publish:
-
-```bash
-curl -i   -X PUT   "$PACT_BROKER_URL/pacts/provider/$PACT_PROVIDER/consumer/$PACT_CONSUMER/version/$PACT_CONSUMER_VERSION"   -H 'Content-Type: application/json'   --data-binary @pacts/MarketplaceFrontend-MarketplaceAPI.json
-```
-
-Verify provider and publish the result:
-
-```bash
-PACT_BROKER_URL="$PACT_BROKER_URL" PACT_PROVIDER_VERSION="$PACT_PROVIDER_VERSION" npm run verify:provider
-```
-
-Before tagging the provider as `prod`:
-
-```bash
-curl "$PACT_BROKER_URL/can-i-deploy?pacticipant=$PACT_CONSUMER&version=$PACT_CONSUMER_VERSION&to=prod"
-```
-
-Relevant response:
-
-```json
-{
-&#x20; "deployable": null,
-&#x20; "unknown": 1
-}
-```
-
-Tag the verified provider version:
-
-```bash
-curl -i   -X PUT   "$PACT_BROKER_URL/pacticipants/$PACT_PROVIDER/versions/$PACT_PROVIDER_VERSION/tags/prod"   -H 'Content-Type: application/json'
-```
-
-Run the same gate again:
-
-```bash
-curl "$PACT_BROKER_URL/can-i-deploy?pacticipant=$PACT_CONSUMER&version=$PACT_CONSUMER_VERSION&to=prod"
-```
-
-Relevant response:
-
-```json
-{
-&#x20; "deployable": true
-}
-```
-
-Verify CI:
-
-```bash
-grep -rn "can-i-deploy" .github/workflows/
-```
-
-Validate YAML when PyYAML is installed:
-
-```bash
-python3 -c "import yaml;yaml.safe_load(open('.github/workflows/contract.yml'));print('YAML OK')"
-```
-
-Verify the secret wrapper:
-
-```bash
-test -f scripts/with-secrets.sh && grep -q 'SKIP_VAULT' scripts/with-secrets.sh
-```
-
-Verify that no Pact Broker token value is committed:
-
-```bash
-grep -rnE "PACT_BROKER_TOKEN[[:space:]]*[:=][[:space:]]*['\\"][^'\\"$]"   --include='*.ts'   --include='*.js'   --include='*.yml'   --include='*.yaml'   --include='*.json'   . | grep -v node_modules
-```
-
-Expected: no output.
 
 ## Main project structure
 
 ```text
 src/
+├── config/
 ├── entities/
 ├── migrations/
 ├── orders/
+├── rabbitmq/
+│   ├── broker.ts
+│   ├── order-placed.consumer.ts
+│   ├── order-placed.event.ts
+│   ├── order-placed.publisher.ts
+│   └── topology.ts
 ├── repositories/
 ├── checkout.ts
 ├── data-source.ts
 ├── database.service.ts
+├── demo-rabbit-publish.ts
+├── demo-rabbit-dlq.ts
+├── demo-rabbit-duplicate.ts
 ├── seed.ts
-├── demo-nplus1.ts
-├── demo-race.ts
-├── demo-workers.ts
-├── demo-retry.ts
-└── report.ts
-test/
-├── integration/
-│   ├── testkit/
-│   ├── product.repository.spec.ts
-│   └── user.repository.spec.ts
-├── e2e/
-│   └── orders.e2e.spec.ts
-└── contract/
-&#x20;   ├── consumer/
-&#x20;   └── provider/
-pacts/
-└── MarketplaceFrontend-MarketplaceAPI.json
-.github/
-└── workflows/
-&#x20;   └── contract.yml
-pgbouncer/
-├── pgbouncer.ini
-└── userlist.txt
+└── main.ts
 scripts/
 ├── with-secrets.sh
-├── backup.sh
-└── restore-drill.sh
-backup.cron
-RESTORE-DRILL.md
-db/
-├── schema.sql
-├── seed.sql
-├── indexes.sql
-├── OPTIMIZATIONS.md
-└── queries/
+└── realtime-demo.mjs
+test/
+├── integration/
+├── e2e/
+└── contract/
 ```
 
 ## Submission
 
-Submit the Pull Request from the `hw-18` branch.
+Submit the Pull Request from the `hw-19` branch.
