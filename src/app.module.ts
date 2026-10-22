@@ -4,7 +4,9 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { validateEnv } from './config/env.schema';
 import { DatabaseService } from './database.service';
+import { OrderEventsService } from './orders/order-events.service';
 import { OrdersController } from './orders/orders.controller';
+import { OrdersGateway } from './orders/orders.gateway';
 import { OrdersService } from './orders/orders.service';
 
 @Module({
@@ -16,6 +18,11 @@ import { OrdersService } from './orders/orders.service';
     }),
   ],
   controllers: [AppController, OrdersController],
-  providers: [DatabaseService, OrdersService],
+  providers: [
+    DatabaseService,
+    OrderEventsService,
+    OrdersService,
+    OrdersGateway,
+  ],
 })
 export class AppModule {}
