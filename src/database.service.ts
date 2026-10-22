@@ -1,7 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readFileSync } from 'node:fs';
-import { Pool } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 
 import type { Env } from './config/env.schema';
 
@@ -20,20 +20,32 @@ export class DatabaseService implements OnModuleDestroy {
 
     const url = new URL(databaseUrl);
 
+    const password = url.password
+      ? decodeURIComponent(url.password)
+      : readFileSync(passwordFile, 'utf8').trim();
+
     this.pool = new Pool({
       host: url.hostname,
       port: Number(url.port || 5432),
       user: decodeURIComponent(url.username),
       database: url.pathname.slice(1),
-
-      password: () => {
-        return readFileSync(passwordFile, 'utf8').trim();
-      },
+      password,
     });
 
     this.pool.on('error', error => {
       console.error('Unexpected PostgreSQL pool error:', error.message);
     });
+  }
+
+  async query<R extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ): Promise<QueryResult<R>> {
+    return this.pool.query<R>(text, values);
+  }
+
+  async connect(): Promise<PoolClient> {
+    return this.pool.connect();
   }
 
   async checkConnection() {
