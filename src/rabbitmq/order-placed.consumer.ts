@@ -1,13 +1,16 @@
 import type { Channel, ConsumeMessage } from 'amqplib';
 
 import AppDataSource from '../data-source';
+import type { OrderPlacedPayload } from '../outbox/order-placed-event';
+import type { OrderPlacedMessage } from './order-placed-message';
 import { connectToBroker } from './broker';
-import type { OrderPlacedEvent } from './order-placed.event';
 import {
   assertOrderPlacedTopology,
   ORDER_PLACED_PREFETCH,
   ORDER_PLACED_QUEUE,
 } from './topology';
+
+const CONSUMER_NAME = 'order-placed-consumer';
 
 export interface ConsumerStats {
   delivered: number;
@@ -16,39 +19,70 @@ export interface ConsumerStats {
   acked: number;
 }
 
-interface ProcessedEventRow {
-  event_id: string;
-}
-
 export async function processOrderPlacedEvent(
-  event: OrderPlacedEvent,
+  event: OrderPlacedMessage,
 ): Promise<'applied' | 'skipped'> {
   if (!AppDataSource.isInitialized) {
     await AppDataSource.initialize();
   }
 
-  const rows = (await AppDataSource.query(
-    `
-        INSERT INTO processed_order_events (
-          event_id,
+  const queryRunner = AppDataSource.createQueryRunner();
+
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    const markerRows = (await queryRunner.query(
+      `
+          INSERT INTO processed_messages (
+            message_id,
+            consumer
+          )
+          VALUES ($1, $2)
+          ON CONFLICT (message_id, consumer)
+          DO NOTHING
+          RETURNING message_id
+        `,
+      [event.eventId, CONSUMER_NAME],
+    )) as Array<{
+      message_id: string;
+    }>;
+
+    if (markerRows.length === 0) {
+      await queryRunner.commitTransaction();
+
+      return 'skipped';
+    }
+
+    await queryRunner.query(
+      `
+        INSERT INTO order_event_effects (
+          message_id,
           order_id,
           event_type
         )
         VALUES ($1, $2, $3)
-        ON CONFLICT (event_id)
+        ON CONFLICT (message_id)
         DO NOTHING
-        RETURNING event_id
       `,
-    [event.eventId, event.data.orderId, event.type],
-  )) as ProcessedEventRow[];
+      [event.eventId, event.data.orderId, event.type],
+    );
 
-  return rows.length === 1 ? 'applied' : 'skipped';
+    await queryRunner.commitTransaction();
+
+    return 'applied';
+  } catch (error) {
+    await queryRunner.rollbackTransaction();
+    throw error;
+  } finally {
+    await queryRunner.release();
+  }
 }
 
-function parseOrderPlacedEvent(message: ConsumeMessage): OrderPlacedEvent {
+function parseOrderPlacedEvent(message: ConsumeMessage): OrderPlacedPayload {
   const parsed = JSON.parse(
     message.content.toString('utf8'),
-  ) as OrderPlacedEvent;
+  ) as OrderPlacedPayload;
 
   if (
     !parsed.eventId ||
@@ -64,7 +98,7 @@ function parseOrderPlacedEvent(message: ConsumeMessage): OrderPlacedEvent {
 
 export async function startOrderPlacedConsumer(
   onMessage?: (
-    event: OrderPlacedEvent,
+    event: OrderPlacedPayload,
     result: 'applied' | 'skipped',
   ) => Promise<void> | void,
 ): Promise<{

@@ -44,7 +44,7 @@ export class OrdersController {
       throw new BadRequestException('Idempotency-Key header is required');
     }
 
-    return this.ordersService.create(body);
+    return this.ordersService.create(body, idempotencyKey);
   }
 
   @Patch(':id/status')
