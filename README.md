@@ -15,7 +15,13 @@ Course project for Node.js / NestJS.
 - Pact Broker and `can-i-deploy` CI gate
 - Socket.IO order-status rooms
 - SSE order-status stream with `Last-Event-ID` replay
-- RabbitMQ `order.placed` events with manual ack, prefetch, DLQ and persistent deduplication
+- RabbitMQ `order.placed` events with manual ack, prefetch and DLQ
+- transactional outbox relay and persistent inbox deduplication
+- API-level `Idempotency-Key`
+- Redis cache-aside with TTL jitter and stampede protection
+- Redis-backed rolling sessions
+- shared Redis sliding-window rate limit
+- BullMQ queue with retries, deduplication and scheduler
 
 ## Install and build
 
@@ -37,16 +43,27 @@ node dist/main.js
 docker compose up -d --wait
 ```
 
-| Service             | Address                  |
-| ------------------- | ------------------------ |
-| Marketplace API     | `http://localhost:3000`  |
-| PostgreSQL          | `127.0.0.1:5432`         |
-| PgBouncer           | `127.0.0.1:6432`         |
-| RabbitMQ AMQP       | `amqp://127.0.0.1:5672`  |
-| RabbitMQ Management | `http://127.0.0.1:15672` |
-| Pact Broker         | `http://127.0.0.1:9292`  |
+| Service                        | Address                  |
+| ------------------------------ | ------------------------ |
+| Marketplace API                | `http://localhost:3000`  |
+| PostgreSQL                     | `127.0.0.1:5432`         |
+| PgBouncer                      | `127.0.0.1:6432`         |
+| RabbitMQ AMQP                  | `amqp://127.0.0.1:5672`  |
+| RabbitMQ Management            | `http://127.0.0.1:15672` |
+| Redis cache                    | `redis://127.0.0.1:6381` |
+| Redis queue/session/rate-limit | `redis://127.0.0.1:6382` |
+| Pact Broker                    | `http://127.0.0.1:9292`  |
 
 RabbitMQ development credentials: `app/app`.
+
+The two Redis services intentionally use different eviction policies:
+
+```text
+redis-cache -> allkeys-lru + maxmemory > 0
+redis-queue -> noeviction
+```
+
+Cache data is disposable, while BullMQ and session/rate-limit state must not disappear because Redis evicted a key.
 
 ## Database
 
@@ -60,74 +77,87 @@ DB_PASSWORD=marketplace_password
 DB_NAME=marketplace
 ```
 
+Schema setup:
+
 ```bash
 npm run build
 npm run migrate
 npm run seed
 ```
 
-Main tables: `users`, `products`, `orders`, `order_items`, `post_processing_tasks`. HW19 adds `processed_order_events` for persistent RabbitMQ deduplication.
+Main tables include:
 
-### Checkout and concurrency
+```text
+users
+products
+orders
+order_items
+post_processing_tasks
+outbox_messages
+processed_messages
+order_event_effects
+idempotency_keys
+```
 
-Checkout runs in one transaction:
+## Transactional outbox
 
-- atomic stock decrement
-- buyer balance decrement
-- order creation
-- order item creation
-- post-processing task creation
+Order creation and its event are committed together:
 
-Stock protection:
+```text
+BEGIN
+→ reserve Idempotency-Key
+→ INSERT order
+→ INSERT order_items
+→ INSERT outbox_messages
+→ bind key to order
+→ COMMIT
+```
+
+The relay reads unpublished rows with:
 
 ```sql
-UPDATE products
-SET stock_quantity = stock_quantity - $1
-WHERE id = $2
-  AND stock_quantity >= $1
-RETURNING id, price, stock_quantity;
+WHERE published_at IS NULL
+ORDER BY created_at, id
+FOR UPDATE SKIP LOCKED
 ```
 
-Useful demos:
+and uses this order:
 
-```bash
-npm run demo:race
-npm run demo:workers
-npm run demo:retry
+```text
+publish
+→ UPDATE published_at
+→ COMMIT
 ```
 
-Workers use `FOR UPDATE SKIP LOCKED`. Retry logic handles PostgreSQL `40001` and `40P01`.
+A relay crash can therefore produce duplicate delivery, but the consumer uses `processed_messages` plus an idempotent effect in one PostgreSQL transaction.
 
-## Testing
+Result:
 
-```bash
-npm run test:integration
-npm run test:e2e
-npm run test:contract
-npm run verify:provider
+```text
+at-least-once delivery
++
+idempotent effect
+=
+exactly-once result
 ```
-
-Integration tests use PostgreSQL Testcontainers and real SQL. E2E tests start the full Nest app. Pact verifies the `MarketplaceFrontend -> MarketplaceAPI` contract. CI includes Pact Broker and `can-i-deploy`.
 
 ## Realtime order status
 
 ### WebSocket
-
-Socket.IO clients send `join` with an order id. A socket joins `orders:<id>` only after ownership validation.
 
 ```bash
 node scripts/realtime-demo.mjs
 node scripts/realtime-demo.mjs --same-room
 ```
 
-Expected:
+Expected isolation:
 
 ```text
 A_RECEIVED=1
 B_RECEIVED=0
 ```
 
-Same-room:
+Same-room control:
 
 ```text
 A_RECEIVED=1
@@ -142,150 +172,240 @@ Endpoint:
 GET /orders/:id/events
 ```
 
-Event format:
+`Last-Event-ID` supports replay of buffered events.
+
+## Redis: кеш, сесії, ліміти, черга
+
+HW23 adds Redis for performance and ephemeral shared state. Redis does not replace database invariants or idempotency.
+
+### Cache-aside
+
+The cache Redis uses:
 
 ```text
-id: 1
-event: order.status
-data: {"orderId":1,"status":"paid","occurredAt":"..."}
+maxmemory > 0
+maxmemory-policy=allkeys-lru
 ```
 
-`Last-Event-ID` replays buffered events with larger ids.
-
-## Trade-offs: WebSocket vs SSE
-
-| Criterion      | WebSocket                                 | SSE                                       |
-| -------------- | ----------------------------------------- | ----------------------------------------- |
-| Direction      | Bidirectional                             | Server to client                          |
-| Reconnect      | Supported, replay is custom               | Built in, `Last-Event-ID` supports replay |
-| Infrastructure | Needs WebSocket-aware proxy/load balancer | Standard HTTP streaming                   |
-| Best fit       | Interactive realtime flows                | Notifications and status feeds            |
-
-For order-status notifications, SSE is simpler when the client only receives updates. WebSocket is preferable for frequent bidirectional communication.
-
-With multiple app instances, Socket.IO rooms and in-memory replay are not shared. Use the Socket.IO Redis adapter and shared replay storage.
-
-## Async-події через RabbitMQ
-
-HW19 adds a durable broker path for `order.placed`.
-
-### Topology
-
-- topic exchange: `shop.events`
-- routing key: `order.placed`
-- work queue: `shop.order.placed`
-- DLX: `shop.events.dlx`
-- DLQ: `shop.order.placed.dlq`
-- queue type: quorum
-- prefetch: `10`
-
-Topology is declared by the consumer/bootstrap side. The producer only publishes.
-
-### Event contract
+The selected expensive read uses cache-aside:
 
 ```text
-eventId
-type
-occurredAt
-data.orderId
-data.userId
-data.productId
-data.quantity
-data.totalAmount
+cache hit → Redis only
+cache miss → database → Redis
 ```
 
-Stable event id:
+Every cache write has TTL with jitter:
 
 ```text
-order.placed:<orderId>
+TTL = 300 + random(0..60) seconds
 ```
 
-The producer uses a confirm channel and waits for broker confirms.
+The jitter prevents many keys warmed together from expiring at exactly the same second.
 
-### Delivery semantics
+### Stampede protection
 
-The consumer uses `noAck=false` and acknowledges only after the effect.
-
-This is **at-least-once delivery**, not exactly-once delivery. A message may be redelivered if the effect completed but the acknowledgement did not reach RabbitMQ.
-
-The exactly-once result comes from at-least-once delivery plus an idempotent consumer effect. Processed event ids are persisted in PostgreSQL in `processed_order_events`, so deduplication survives restarts and works across instances.
-
-There is still a failure window between the checkout database commit and RabbitMQ publish. HW19 does not make PostgreSQL and RabbitMQ atomic; transactional outbox will close this gap in HW22. The processed-event marker and a future real business effect should also be committed in one DB transaction.
-
-### Prefetch
-
-The consumer uses:
+A cold key uses a single-flight lock:
 
 ```text
-prefetch=10
+SET lock:<key> <token> NX PX <ttl>
 ```
 
-Even with a conservative 1 second processing time, `10 × 1s = 10s`, far below the default 30 minute `consumer_timeout`.
+Only the lock winner loads from the database. Other callers wait and re-read the cache.
 
-### DLQ
+The lock is released with compare-and-delete through Lua, not a plain `DEL`, so one process cannot delete a lock already acquired by another owner.
 
-The work queue uses `x-dead-letter-exchange` and `x-dead-letter-routing-key`. Invalid messages are rejected with `requeue=false`. The demo reads `x-death` and verifies the reason.
+If the stampede lock fails, correctness is not affected: the worst result is extra database reads. That is acceptable because this lock protects performance, not a business invariant. Business correctness still belongs to database transactions, unique constraints and idempotency.
 
-### Demo results
-
-Happy path:
+### Cache demo
 
 ```bash
-npm run demo:publish
+npm run demo:cache
 ```
+
+Acceptance output:
 
 ```text
-published=5
-delivered=5
-effect=5
-acked=5
-dlq=0
-prefetch=10
+cache-lru=1
+cache-maxmemory=1
+warmed=60
+ttl-distinct>=5
+concurrent=25
+db-calls=1
+db-calls-warm=0
 ```
 
-DLQ:
+The cold-key concurrency test proves that at least 20 simultaneous requests result in exactly one database load. The next 100 reads of the warm key result in zero database calls.
+
+### Sessions
+
+Sessions are stored in the `noeviction` Redis instance rather than the LRU cache instance.
+
+This avoids unpredictable logout caused by cache eviction.
+
+Every successful read renews the session TTL:
+
+```text
+GET session
+→ EXPIRE session <ttl>
+```
+
+This is rolling TTL: an active user keeps the session alive.
 
 ```bash
-npm run demo:dlq
+npm run demo:session
 ```
+
+Acceptance output:
 
 ```text
-rejected=1
-work=0
-dlq=1
-dlq-reason=rejected
-effect=0
+requests=3
+sessions=1
+in-redis=1
+ttl-renewed=1
 ```
 
-Duplicate:
+### Rate limit
+
+The rate limiter is shared through Redis, so multiple application instances consume the same limit.
+
+The implementation uses a sliding window stored in a sorted set. Cleanup, counting and insertion are executed atomically in one Lua script.
+
+A sliding window was chosen because it avoids the `2 × limit` burst that a fixed window can allow at a boundary.
+
+When the limit is exceeded:
+
+```text
+HTTP 429
+Retry-After: <seconds>
+```
 
 ```bash
-npm run demo:duplicate
+npm run demo:ratelimit
 ```
+
+Acceptance output:
 
 ```text
-deliveries=2
-effect=1
-skipped=1
+instances=2
+limit=5
+requests=8
+allowed=5
+blocked=3
+status=429
+retry-after=1
 ```
 
-The duplicate demo applies the effect once and uses `nack(..., requeue=true)` to force redelivery. The repeated event is skipped by persistent deduplication.
+### BullMQ queue
+
+BullMQ uses the separate Redis instance configured with:
+
+```text
+maxmemory-policy=noeviction
+appendonly=yes
+appendfsync=everysec
+```
+
+The queue uses:
+
+```text
+attempts >= 3
+exponential backoff
+jitter
+jobId deduplication
+upsertJobScheduler
+```
+
+The worker connection uses:
+
+```text
+maxRetriesPerRequest=null
+```
+
+Two `add()` calls with the same `jobId` create one queue job.
+
+`removeOnComplete: true` is not used because immediate removal would remove the completed job identity and break the desired deduplication window.
+
+Schedulers use `upsertJobScheduler`, so application restarts do not create duplicate schedulers.
+
+```bash
+npm run demo:queue
+```
+
+Acceptance output:
+
+```text
+queue-noeviction=1
+attempts>=3
+completed=1
+added=2
+queued=1
+schedulers>=1
+scheduled-runs>=2
+```
+
+## Why two Redis instances
+
+Cache and BullMQ require incompatible Redis memory policies.
+
+Cache:
+
+```text
+allkeys-lru
+```
+
+Queue/session/rate-limit:
+
+```text
+noeviction
+```
+
+`maxmemory-policy` belongs to the Redis process, not to an individual logical database selected with `SELECT`, so one Redis process cannot safely serve both purposes.
+
+Sessions are also kept outside the cache Redis because LRU eviction must never randomly invalidate a user session.
 
 ## Secrets
 
-Commands that need database or broker credentials use `scripts/with-secrets.sh`.
-
-For grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without vault access.
-
-RabbitMQ demo scripts:
+Commands requiring database, broker or Redis access use:
 
 ```text
-demo:publish
-demo:dlq
-demo:duplicate
+scripts/with-secrets.sh
+```
+
+For grading:
+
+```text
+SKIP_VAULT=1
+```
+
+allows already-provided environment variables to be used without access to the secret store.
+
+HW23 demo scripts:
+
+```text
+demo:cache
+demo:session
+demo:ratelimit
+demo:queue
+```
+
+All four are wrapped directly in `package.json` with:
+
+```text
+bash scripts/with-secrets.sh dev ...
 ```
 
 No live connection strings are stored in tracked `.env` files.
+
+## Testing
+
+Previous tests remain available:
+
+```bash
+npm run test:integration
+npm run test:e2e
+npm run test:contract
+npm run verify:provider
+```
 
 ## Grading
 
@@ -293,6 +413,10 @@ Run from the repository root:
 
 ```bash
 docker compose up -d --wait
+
+export REDIS_URL=redis://127.0.0.1:6381
+export REDIS_QUEUE_URL=redis://127.0.0.1:6382
+
 export DB_HOST=127.0.0.1
 export DB_PORT=6432
 export DB_USER=marketplace
@@ -300,8 +424,10 @@ export DB_PASSWORD=marketplace_password
 export DB_NAME=marketplace
 export DB_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
+
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
+
 npm ci
 npx tsc --noEmit
 npm run build
@@ -309,51 +435,91 @@ npm run migrate
 npm run seed
 ```
 
-HW19:
+Run HW23 demos:
 
 ```bash
-npm run demo:publish
-npm run demo:dlq
-npm run demo:duplicate
+npm run demo:cache
+npm run demo:session
+npm run demo:ratelimit
+npm run demo:queue
+```
+
+Expected invariants:
+
+```text
+demo:cache
+cache-lru=1
+cache-maxmemory=1
+warmed>=50
+ttl-distinct>=5
+concurrent>=20
+db-calls=1
+db-calls-warm=0
+
+demo:session
+requests>=3
+sessions=1
+in-redis=1
+ttl-renewed=1
+
+demo:ratelimit
+instances>=2
+allowed=limit
+blocked>=1
+status=429
+retry-after=1
+
+demo:queue
+queue-noeviction=1
+attempts>=3
+completed=1
+added=2
+queued=1
+schedulers>=1
+scheduled-runs>=2
+```
+
+Verify Redis policies:
+
+```bash
+docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory-policy
+docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory
+docker exec marketplace-redis-queue redis-cli CONFIG GET maxmemory-policy
 ```
 
 Expected:
 
 ```text
-demo:publish
-published=5
-effect=5
-dlq=0
-prefetch=10
-
-demo:dlq
-work=0
-dlq=1
-dlq-reason=rejected
-effect=0
-
-demo:duplicate
-deliveries=2
-effect=1
+cache: allkeys-lru
+cache maxmemory: > 0
+queue: noeviction
 ```
 
-Verify wrappers:
+Static policy check:
 
 ```bash
-node -e "const s=require('./package.json').scripts;const bad=['demo:publish','demo:dlq','demo:duplicate'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+grep -rniE   --exclude-dir=node_modules   --exclude-dir=dist   "maxmemory[ _-]*policy|noeviction|allkeys[ _-]*lru" .
 ```
 
-Verify DLX:
+Verify demo wrappers:
 
 ```bash
-grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs'   --include='*.json' --include='*.sh' --include='*.yml' --include='*.yaml' --include='*.sql'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "dead[ _-]*letter[ _-]*(exchange|routing)" .
+node -e "const s=require('./package.json').scripts;const bad=['demo:cache','demo:session','demo:ratelimit','demo:queue'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
 ```
 
-Verify prefetch:
+Expected:
+
+```text
+OK
+```
+
+Verify README:
 
 ```bash
-grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.json'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "prefetch|basic[._-]?qos" .
+grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
 ```
+
+Expected: at least `1`.
 
 Verify tracked env files:
 
@@ -365,17 +531,6 @@ done
 
 Expected: no output.
 
-Previous checks:
-
-```bash
-npm run test:integration
-npm run test:e2e
-npm run test:contract
-npm run verify:provider
-node scripts/realtime-demo.mjs
-node scripts/realtime-demo.mjs --same-room
-```
-
 ## Main project structure
 
 ```text
@@ -384,24 +539,32 @@ src/
 ├── entities/
 ├── migrations/
 ├── orders/
+├── outbox/
 ├── rabbitmq/
-│   ├── broker.ts
-│   ├── order-placed.consumer.ts
-│   ├── order-placed.event.ts
-│   ├── order-placed.publisher.ts
-│   └── topology.ts
+├── redis/
+│   ├── cache.ts
+│   ├── product-cache.ts
+│   ├── session.ts
+│   ├── rate-limit.ts
+│   └── queue.ts
 ├── repositories/
 ├── checkout.ts
 ├── data-source.ts
 ├── database.service.ts
-├── demo-rabbit-publish.ts
-├── demo-rabbit-dlq.ts
-├── demo-rabbit-duplicate.ts
+├── demo-cache.ts
+├── demo-session.ts
+├── demo-ratelimit.ts
+├── demo-queue.ts
+├── demo-outbox.ts
+├── demo-crash-write.ts
+├── demo-crash-relay.ts
 ├── seed.ts
 └── main.ts
+
 scripts/
 ├── with-secrets.sh
 └── realtime-demo.mjs
+
 test/
 ├── integration/
 ├── e2e/
@@ -410,4 +573,4 @@ test/
 
 ## Submission
 
-Submit the Pull Request from the `hw-19` branch.
+Submit the Pull Request from the `hw-23` branch.
