@@ -1,12 +1,11 @@
 import { connectToBroker } from './broker';
-import type { OrderPlacedEvent } from './order-placed.event';
+import { OrderPlacedMessage } from './order-placed-message';
 import { ORDER_PLACED_ROUTING_KEY, SHOP_EVENTS_EXCHANGE } from './topology';
 
 export async function publishOrderPlaced(
-  event: OrderPlacedEvent,
+  event: OrderPlacedMessage,
 ): Promise<void> {
   const connection = await connectToBroker();
-
   const channel = await connection.createConfirmChannel();
 
   try {

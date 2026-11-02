@@ -15,7 +15,10 @@ Course project for Node.js / NestJS.
 - Pact Broker and `can-i-deploy` CI gate
 - Socket.IO order-status rooms
 - SSE order-status stream with `Last-Event-ID` replay
-- RabbitMQ `order.placed` events with manual ack, prefetch, DLQ and persistent deduplication
+- RabbitMQ `order.placed` events with manual ack, prefetch and DLQ
+- transactional outbox relay
+- persistent inbox deduplication
+- API-level `Idempotency-Key`
 
 ## Install and build
 
@@ -60,25 +63,33 @@ DB_PASSWORD=marketplace_password
 DB_NAME=marketplace
 ```
 
+Run schema setup:
+
 ```bash
 npm run build
 npm run migrate
 npm run seed
 ```
 
-Main tables: `users`, `products`, `orders`, `order_items`, `post_processing_tasks`. HW19 adds `processed_order_events` for persistent RabbitMQ deduplication.
+Main tables include:
+
+```text
+users
+products
+orders
+order_items
+post_processing_tasks
+outbox_messages
+processed_messages
+order_event_effects
+idempotency_keys
+```
 
 ### Checkout and concurrency
 
-Checkout runs in one transaction:
+Checkout uses a single transaction for the business state.
 
-- atomic stock decrement
-- buyer balance decrement
-- order creation
-- order item creation
-- post-processing task creation
-
-Stock protection:
+Stock protection uses an atomic conditional update:
 
 ```sql
 UPDATE products
@@ -88,7 +99,7 @@ WHERE id = $2
 RETURNING id, price, stock_quantity;
 ```
 
-Useful demos:
+Useful earlier demos:
 
 ```bash
 npm run demo:race
@@ -107,7 +118,7 @@ npm run test:contract
 npm run verify:provider
 ```
 
-Integration tests use PostgreSQL Testcontainers and real SQL. E2E tests start the full Nest app. Pact verifies the `MarketplaceFrontend -> MarketplaceAPI` contract. CI includes Pact Broker and `can-i-deploy`.
+Integration tests use PostgreSQL Testcontainers and real SQL. E2E tests start the full Nest application. Pact verifies the `MarketplaceFrontend -> MarketplaceAPI` contract. CI includes Pact Broker and `can-i-deploy`.
 
 ## Realtime order status
 
@@ -120,14 +131,14 @@ node scripts/realtime-demo.mjs
 node scripts/realtime-demo.mjs --same-room
 ```
 
-Expected:
+Expected isolation:
 
 ```text
 A_RECEIVED=1
 B_RECEIVED=0
 ```
 
-Same-room:
+Same-room control:
 
 ```text
 A_RECEIVED=1
@@ -163,127 +174,228 @@ data: {"orderId":1,"status":"paid","occurredAt":"..."}
 
 For order-status notifications, SSE is simpler when the client only receives updates. WebSocket is preferable for frequent bidirectional communication.
 
-With multiple app instances, Socket.IO rooms and in-memory replay are not shared. Use the Socket.IO Redis adapter and shared replay storage.
+With multiple application instances, Socket.IO rooms and in-memory replay must move to shared infrastructure such as the Socket.IO Redis adapter and shared replay storage.
 
-## Async-події через RabbitMQ
+## RabbitMQ delivery
 
-HW19 adds a durable broker path for `order.placed`.
-
-### Topology
-
-- topic exchange: `shop.events`
-- routing key: `order.placed`
-- work queue: `shop.order.placed`
-- DLX: `shop.events.dlx`
-- DLQ: `shop.order.placed.dlq`
-- queue type: quorum
-- prefetch: `10`
-
-Topology is declared by the consumer/bootstrap side. The producer only publishes.
-
-### Event contract
+RabbitMQ topology:
 
 ```text
-eventId
+exchange: shop.events
+routing key: order.placed
+queue: shop.order.placed
+DLX: shop.events.dlx
+DLQ: shop.order.placed.dlq
+queue type: quorum
+prefetch: 10
+```
+
+The producer uses a confirm channel and waits for broker confirms. The consumer uses manual acknowledgements and acknowledges only after the effect is complete.
+
+Delivery is **at-least-once**. Exactly-once delivery is not assumed.
+
+## Outbox та ідемпотентність
+
+HW22 removes the dual-write gap between PostgreSQL business state and RabbitMQ publication.
+
+### Transactional outbox
+
+Order creation and its outbox row are written in the same database transaction:
+
+```text
+BEGIN
+→ reserve Idempotency-Key
+→ INSERT order
+→ INSERT order_items
+→ INSERT outbox_messages
+→ bind Idempotency-Key to order
+→ COMMIT
+```
+
+The producer is not called from inside this business transaction.
+
+The outbox event contains an explicit public contract instead of spreading a database or ORM entity.
+
+Main outbox fields:
+
+```text
+event_id
+aggregate_type
+aggregate_id
 type
-occurredAt
-data.orderId
-data.userId
-data.productId
-data.quantity
-data.totalAmount
+payload
+created_at
+published_at
+attempts
 ```
 
-Stable event id:
+Unpublished messages are found through a partial index using:
+
+```sql
+WHERE published_at IS NULL
+```
+
+### Relay
+
+The polling relay selects pending messages with:
+
+```sql
+SELECT ...
+FROM outbox_messages
+WHERE published_at IS NULL
+ORDER BY created_at, id
+FOR UPDATE SKIP LOCKED
+LIMIT $1;
+```
+
+For each row the order is:
 
 ```text
-order.placed:<orderId>
+publish
+→ UPDATE published_at
+→ COMMIT
 ```
 
-The producer uses a confirm channel and waits for broker confirms.
+`publish` must happen before `UPDATE published_at`.
 
-### Delivery semantics
+If `published_at` were updated first and the process failed before publish, the event would be permanently lost. With publish first, a crash can create a duplicate, but duplicates can be safely handled with idempotency.
 
-The consumer uses `noAck=false` and acknowledges only after the effect.
+The demo uses a **simulated relay crash**: an exception is thrown after broker publish confirmation but before `UPDATE published_at`.
 
-This is **at-least-once delivery**, not exactly-once delivery. A message may be redelivered if the effect completed but the acknowledgement did not reach RabbitMQ.
+### Consumer idempotency
 
-The exactly-once result comes from at-least-once delivery plus an idempotent consumer effect. Processed event ids are persisted in PostgreSQL in `processed_order_events`, so deduplication survives restarts and works across instances.
+The consumer uses two levels of protection.
 
-There is still a failure window between the checkout database commit and RabbitMQ publish. HW19 does not make PostgreSQL and RabbitMQ atomic; transactional outbox will close this gap in HW22. The processed-event marker and a future real business effect should also be committed in one DB transaction.
+Level 1 — natural effect key:
 
-### Prefetch
+```sql
+INSERT INTO order_event_effects (...)
+ON CONFLICT (message_id)
+DO NOTHING;
+```
 
-The consumer uses:
+Level 2 — persistent inbox:
 
 ```text
-prefetch=10
+processed_messages(message_id, consumer)
 ```
 
-Even with a conservative 1 second processing time, `10 × 1s = 10s`, far below the default 30 minute `consumer_timeout`.
+The inbox marker and the effect are written in the **same PostgreSQL transaction**.
 
-### DLQ
+Therefore a duplicate delivery is observable, but the effect is applied only once.
 
-The work queue uses `x-dead-letter-exchange` and `x-dead-letter-routing-key`. Invalid messages are rejected with `requeue=false`. The demo reads `x-death` and verifies the reason.
+This gives:
+
+```text
+at-least-once delivery
++
+idempotent effect
+=
+exactly-once result
+```
+
+### API Idempotency-Key
+
+`POST /orders` requires:
+
+```text
+Idempotency-Key
+```
+
+Two requests with the same key represent the same intent and return the same order.
+
+The key is not derived from a request-body hash, so two intentional identical orders can still be created by using different keys.
+
+### Ordering
+
+`ORDER BY created_at, id` only controls relay selection order.
+
+It does **not** guarantee global broker delivery order because multiple relay workers can process rows concurrently through `SKIP LOCKED`.
+
+If strict ordering is required, it must be designed around an aggregate or partitioning key.
+
+### Outbox cleanup
+
+Published outbox rows must not grow forever.
+
+A production system should periodically archive or delete old rows where `published_at IS NOT NULL`, while keeping enough retention for diagnostics and replay requirements.
 
 ### Demo results
 
 Happy path:
 
 ```bash
-npm run demo:publish
+npm run demo:outbox
 ```
+
+Measured result:
 
 ```text
-published=5
-delivered=5
-effect=5
-acked=5
-dlq=0
-prefetch=10
+requests=2
+orders=1
+outbox=1
+published=1
+deliveries=1
+effect=1
+processed=1
 ```
 
-DLQ:
+Business transaction failure:
 
 ```bash
-npm run demo:dlq
+npm run demo:crash-write
 ```
 
+Measured result:
+
 ```text
-rejected=1
-work=0
-dlq=1
-dlq-reason=rejected
+write-failed=1
+orders=0
+outbox=0
+published=0
+deliveries=0
 effect=0
 ```
 
-Duplicate:
+Relay failure:
 
 ```bash
-npm run demo:duplicate
+npm run demo:crash-relay
 ```
+
+Measured result:
 
 ```text
+published=2
 deliveries=2
+applied=1
 effect=1
-skipped=1
+processed=1
 ```
 
-The duplicate demo applies the effect once and uses `nack(..., requeue=true)` to force redelivery. The repeated event is skipped by persistent deduplication.
+The first relay publishes and fails before `published_at` is committed. The next relay sees the same pending outbox row and publishes it again.
+
+The consumer receives the event at least twice, but the persistent inbox and idempotent effect keep the business result at one.
 
 ## Secrets
 
-Commands that need database or broker credentials use `scripts/with-secrets.sh`.
-
-For grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without vault access.
-
-RabbitMQ demo scripts:
+Commands that need database or broker credentials use:
 
 ```text
-demo:publish
-demo:dlq
-demo:duplicate
+scripts/with-secrets.sh
 ```
+
+For grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without access to the secret store.
+
+HW22 demo scripts:
+
+```text
+demo:outbox
+demo:crash-write
+demo:crash-relay
+```
+
+All three are wrapped directly in `package.json` with `bash scripts/with-secrets.sh dev ...`.
 
 No live connection strings are stored in tracked `.env` files.
 
@@ -293,6 +405,7 @@ Run from the repository root:
 
 ```bash
 docker compose up -d --wait
+
 export DB_HOST=127.0.0.1
 export DB_PORT=6432
 export DB_USER=marketplace
@@ -302,6 +415,7 @@ export DB_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marke
 export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
+
 npm ci
 npx tsc --noEmit
 npm run build
@@ -309,51 +423,65 @@ npm run migrate
 npm run seed
 ```
 
-HW19:
+Run HW22 demos:
 
 ```bash
-npm run demo:publish
-npm run demo:dlq
-npm run demo:duplicate
+npm run demo:outbox
+npm run demo:crash-write
+npm run demo:crash-relay
 ```
 
-Expected:
+Expected invariants:
 
 ```text
-demo:publish
-published=5
-effect=5
-dlq=0
-prefetch=10
+demo:outbox
+requests=2
+orders=1
+outbox=1
+published=1
+effect=1
+processed=1
 
-demo:dlq
-work=0
-dlq=1
-dlq-reason=rejected
+demo:crash-write
+write-failed=1
+orders=0
+outbox=0
+published=0
+deliveries=0
 effect=0
 
-demo:duplicate
-deliveries=2
+demo:crash-relay
+deliveries>=2
+applied=1
 effect=1
+processed=1
 ```
 
-Verify wrappers:
+Verify `SKIP LOCKED`:
 
 ```bash
-node -e "const s=require('./package.json').scripts;const bad=['demo:publish','demo:dlq','demo:duplicate'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+grep -rniE   --include='*.ts'   --exclude-dir=node_modules   --exclude-dir=dist   "skip[ _-]*locked" .
 ```
 
-Verify DLX:
+Verify conflict-based deduplication:
 
 ```bash
-grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs'   --include='*.json' --include='*.sh' --include='*.yml' --include='*.yaml' --include='*.sql'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "dead[ _-]*letter[ _-]*(exchange|routing)" .
+grep -rniE   --include='*.ts'   --exclude-dir=node_modules   --exclude-dir=dist   "on[ _]*conflict|do[ _]+nothing|or[ _]*ignore|skip[ _]*duplicates|ignore[ _]*duplicates|23505|P2002" .
 ```
 
-Verify prefetch:
+Verify demo wrappers:
 
 ```bash
-grep -rniE --include='*.ts' --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.json'   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git   "prefetch|basic[._-]?qos" .
+node -e "const s=require('./package.json').scripts;const bad=['demo:outbox','demo:crash-write','demo:crash-relay'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
 ```
+
+Verify README grading section:
+
+```bash
+grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
+```
+
+Expected: at least `1`.
 
 Verify tracked env files:
 
@@ -365,7 +493,7 @@ done
 
 Expected: no output.
 
-Previous checks:
+Previous checks remain available:
 
 ```bash
 npm run test:integration
@@ -384,24 +512,32 @@ src/
 ├── entities/
 ├── migrations/
 ├── orders/
+├── outbox/
+│   ├── order-placed-event.ts
+│   ├── outbox-relay.ts
+│   ├── outbox.repository.ts
+│   └── run-relay.ts
 ├── rabbitmq/
 │   ├── broker.ts
 │   ├── order-placed.consumer.ts
 │   ├── order-placed.event.ts
+│   ├── order-placed-message.ts
 │   ├── order-placed.publisher.ts
 │   └── topology.ts
 ├── repositories/
 ├── checkout.ts
 ├── data-source.ts
 ├── database.service.ts
-├── demo-rabbit-publish.ts
-├── demo-rabbit-dlq.ts
-├── demo-rabbit-duplicate.ts
+├── demo-outbox.ts
+├── demo-crash-write.ts
+├── demo-crash-relay.ts
 ├── seed.ts
 └── main.ts
+
 scripts/
 ├── with-secrets.sh
 └── realtime-demo.mjs
+
 test/
 ├── integration/
 ├── e2e/
@@ -410,4 +546,4 @@ test/
 
 ## Submission
 
-Submit the Pull Request from the `hw-19` branch.
+Submit the Pull Request from the `hw-22` branch.
