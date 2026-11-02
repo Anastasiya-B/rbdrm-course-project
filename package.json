@@ -26,7 +26,10 @@
     "demo:publish": "bash scripts/with-secrets.sh dev node dist/demo-rabbit-publish.js",
     "demo:dlq": "bash scripts/with-secrets.sh dev node dist/demo-rabbit-dlq.js",
     "demo:duplicate": "bash scripts/with-secrets.sh dev node dist/demo-rabbit-duplicate.js",
-    "demo:cache": "bash scripts/with-secrets.sh dev node dist/demo-cache.js",
+    "demo:outbox": "bash scripts/with-secrets.sh dev node dist/demo-outbox.js",
+    "demo:crash-write": "bash scripts/with-secrets.sh dev node dist/demo-crash-write.js",
+    "demo:crash-relay": "bash scripts/with-secrets.sh dev node dist/demo-crash-relay.js",
+        "demo:cache": "bash scripts/with-secrets.sh dev node dist/demo-cache.js",
     "demo:session": "bash scripts/with-secrets.sh dev node dist/demo-session.js",
     "demo:ratelimit": "bash scripts/with-secrets.sh dev node dist/demo-ratelimit.js",
     "demo:queue": "bash scripts/with-secrets.sh dev node dist/demo-queue.js"

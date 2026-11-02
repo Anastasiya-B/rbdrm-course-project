@@ -151,12 +151,14 @@ node scripts/realtime-demo.mjs --same-room
 ```
 
 Expected isolation:
+Expected isolation:
 
 ```text
 A_RECEIVED=1
 B_RECEIVED=0
 ```
 
+Same-room control:
 Same-room control:
 
 ```text
@@ -394,6 +396,8 @@ All four are wrapped directly in `package.json` with:
 bash scripts/with-secrets.sh dev ...
 ```
 
+All three are wrapped directly in `package.json` with `bash scripts/with-secrets.sh dev ...`.
+
 No live connection strings are stored in tracked `.env` files.
 
 ## Testing
@@ -427,6 +431,7 @@ export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432
 
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
+
 
 npm ci
 npx tsc --noEmit
@@ -487,7 +492,7 @@ docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory
 docker exec marketplace-redis-queue redis-cli CONFIG GET maxmemory-policy
 ```
 
-Expected:
+Expected invariants:
 
 ```text
 cache: allkeys-lru
@@ -501,6 +506,7 @@ Static policy check:
 grep -rniE   --exclude-dir=node_modules   --exclude-dir=dist   "maxmemory[ _-]*policy|noeviction|allkeys[ _-]*lru" .
 ```
 
+Verify demo wrappers:
 Verify demo wrappers:
 
 ```bash
@@ -517,7 +523,10 @@ Verify README:
 
 ```bash
 grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
+grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
 ```
+
+Expected: at least `1`.
 
 Expected: at least `1`.
 
@@ -561,9 +570,11 @@ src/
 ├── seed.ts
 └── main.ts
 
+
 scripts/
 ├── with-secrets.sh
 └── realtime-demo.mjs
+
 
 test/
 ├── integration/
