@@ -1,13 +1,22 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { AuthModule } from './auth/auth.module';
 
 import { AppController } from './app.controller';
+
+import { AuthModule } from './auth/auth.module';
+
 import { validateEnv } from './config/env.schema';
+
 import { DatabaseService } from './database.service';
+
+import { FilesModule } from './files/files.module';
+
 import { OrderEventsService } from './orders/order-events.service';
+
 import { OrdersController } from './orders/orders.controller';
+
 import { OrdersGateway } from './orders/orders.gateway';
+
 import { OrdersService } from './orders/orders.service';
 
 @Module({
@@ -18,6 +27,7 @@ import { OrdersService } from './orders/orders.service';
       validate: validateEnv,
     }),
     AuthModule,
+    FilesModule,
   ],
   controllers: [AppController, OrdersController],
   providers: [
