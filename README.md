@@ -22,6 +22,13 @@ Course project for Node.js / NestJS.
 - Redis-backed rolling sessions
 - shared Redis sliding-window rate limit
 - BullMQ queue with retries, deduplication and scheduler
+- RS256 access JWTs and rotating opaque refresh tokens
+- RBAC and ownership authorization
+- direct-to-storage uploads with presigned URLs
+- resumable multipart uploads
+- private S3-compatible storage
+- local CDN/edge cache
+- content-hashed immutable assets
 
 ## Install and build
 
@@ -53,6 +60,8 @@ docker compose up -d --wait
 | Redis cache                    | `redis://127.0.0.1:6381` |
 | Redis queue/session/rate-limit | `redis://127.0.0.1:6382` |
 | Pact Broker                    | `http://127.0.0.1:9292`  |
+| MinIO S3 API                   | `http://127.0.0.1:22650` |
+| MinIO console                  | `http://127.0.0.1:22651` |
 
 RabbitMQ development credentials: `app/app`.
 
@@ -97,6 +106,9 @@ outbox_messages
 processed_messages
 order_event_effects
 idempotency_keys
+refresh_tokens
+access_token_denylist
+files
 ```
 
 ## Transactional outbox
@@ -493,9 +505,190 @@ role-allowed=200|201
 tampered=401
 ```
 
+## Files
+
+HW26 adds direct-to-storage uploads, resumable multipart uploads and private CDN-style asset delivery.
+
+The application does not proxy uploaded file bytes through the NestJS API.
+
+The upload flow is:
+
+```text
+POST /uploads/intent
+→ server generates object key
+→ server returns presigned PUT URL
+→ client uploads directly to storage
+→ POST /uploads/commit
+→ server verifies object with HeadObject
+→ files.status = COMPLETED
+```
+
+The `POST /uploads/intent` endpoint is protected with the HW24 authentication guard.
+
+### Storage variables
+
+| Змінна                         | Джерело                       | Навіщо                                                            |
+| ------------------------------ | ----------------------------- | ----------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`             | compose / оточення            | S3-compatible endpoint; local MinIO uses `http://127.0.0.1:22650` |
+| `STORAGE_REGION`               | оточення                      | storage region; local value is `us-east-1`                        |
+| `STORAGE_ACCESS_KEY`           | сховище / local compose       | S3 access key                                                     |
+| `STORAGE_SECRET_KEY`           | сховище / local compose       | S3 secret key                                                     |
+| `STORAGE_BUCKET`               | оточення                      | private bucket name                                               |
+| `UPLOAD_PRESIGNED_TTL_SECONDS` | optional environment override | presigned PUT lifetime; default is 300 seconds                    |
+
+No new tracked `.env` file is required. Demo commands continue to use `scripts/with-secrets.sh`, and `SKIP_VAULT=1` allows grading with already-exported environment variables.
+
+### Server-generated object keys
+
+Object keys are generated only by the server.
+
+Example:
+
+```text
+uploads/1/3d03d576-47fa-45cb-aad4-ce3d8c2c5e93.png
+```
+
+The original client filename is not inserted into the storage key. The extension is selected from the content-type allowlist, so a filename such as `../../etc/passwd` cannot control the destination path.
+
+### Upload states
+
+A new upload intent creates a database row with `status=PENDING`.
+
+`POST /uploads/commit` calls `HeadObject`. If the object does not exist, commit returns `4xx`. If an expected size was provided, the actual size must match. Only after successful verification does the row become `COMPLETED`.
+
+### Presigned URL TTL
+
+The normal upload TTL is 300 seconds. Five minutes is intentionally short enough to limit exposure of a leaked presigned URL while still allowing a normal avatar/document upload to finish.
+
+Presigned URLs are bearer capabilities and cannot be revoked individually after issuance. The upload demo temporarily uses a one-second TTL only for the `expired=403` acceptance check.
+
+### Direct upload proof
+
+```bash
+npm run demo:upload
+```
+
+Actual acceptance output:
+
+```text
+intent=200
+key-from-server=1
+api-alive=0
+put-offline=200
+commit=200
+commit-without-bytes=409
+tampered=403
+expired=403
+```
+
+`api-alive=0` followed by `put-offline=200` proves that file bytes do not pass through the Marketplace API. `tampered=403` proves that changing the object path invalidates the signature. `expired=403` proves that an expired presigned URL is rejected.
+
+### Multipart uploads
+
+Large uploads use:
+
+```text
+CreateMultipartUpload
+→ UploadPart
+→ ListParts
+→ CompleteMultipartUpload
+```
+
+Part size is calculated as:
+
+```text
+max(5 MiB, ceil(fileSize / 10000))
+```
+
+This respects the S3 10,000-part limit and the 5 MiB minimum for every part except the final one. Resume behavior uses `ListParts`, so already-uploaded parts are skipped.
+
+### Multipart demo
+
+```bash
+npm run demo:multipart
+```
+
+Actual acceptance output:
+
+```text
+head-before-complete=404
+resumed-parts=1
+complete=200
+size-match=1
+etag-multipart=1
+```
+
+The demo is self-cleaning and can be executed repeatedly. A multipart ETag ends with `-<part-count>` and must not be interpreted as the MD5 of the complete file.
+
+For production S3, an `AbortIncompleteMultipartUpload` lifecycle rule should remove abandoned multipart uploads, for example after seven days.
+
+### Private bucket and local edge
+
+Storage is private. An anonymous direct GET returns `403`.
+
+For local grading, the project uses a small Node HTTP edge server instead of CloudFront. It reads private objects using AWS SDK credentials and caches them in memory. Responses expose `X-Cache: MISS` and `X-Cache: HIT`.
+
+### AWS bucket policy for CloudFront OAC
+
+For an AWS deployment with CloudFront Origin Access Control, the equivalent private bucket policy is:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontServicePrincipalReadOnly",
+      "Effect": "Allow",
+      "Principal": { "Service": "cloudfront.amazonaws.com" },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::YOUR_PRIVATE_BUCKET/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::YOUR_AWS_ACCOUNT_ID:distribution/YOUR_DISTRIBUTION_ID"
+        }
+      }
+    }
+  ]
+}
+```
+
+There is no public `Principal: "*"` read permission.
+
+### Immutable content-hashed assets
+
+Static asset names contain a hash of their bytes, for example `app.css → app.15c42ab7.css`.
+
+Uploaded immutable assets use:
+
+```text
+Cache-Control: public, max-age=31536000, immutable
+```
+
+Changing the content produces a new object name and URL, so no cache invalidation is required.
+
+### CDN demo
+
+```bash
+npm run demo:cdn
+```
+
+Actual acceptance output:
+
+```text
+direct=403
+edge-miss=200
+edge-hit=200
+cache-hit=1
+new-name=1
+new-url=200
+content-changed=1
+```
+
+`direct=403` proves storage is private, `cache-hit=1` proves the second request is served from edge cache, and the new-name/new-url checks prove immutable versioning works without invalidation.
+
 ## Secrets
 
-Commands requiring database, broker or Redis access use:
+Commands requiring database, broker, Redis or storage access use:
 
 ```text
 scripts/with-secrets.sh
@@ -524,7 +717,13 @@ All four are wrapped directly in `package.json` with:
 bash scripts/with-secrets.sh dev ...
 ```
 
-All three are wrapped directly in `package.json` with `bash scripts/with-secrets.sh dev ...`.
+HW26 demos are also wrapped directly in `package.json` with `bash scripts/with-secrets.sh dev ...`:
+
+```text
+demo:upload
+demo:multipart
+demo:cdn
+```
 
 No live connection strings are stored in tracked `.env` files.
 
@@ -557,6 +756,13 @@ export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432
 export REDIS_URL=redis://127.0.0.1:6381
 export REDIS_QUEUE_URL=redis://127.0.0.1:6382
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
+
+export STORAGE_ENDPOINT=http://127.0.0.1:22650
+export STORAGE_ACCESS_KEY=hw26user
+export STORAGE_SECRET_KEY=hw26secretpass
+export STORAGE_BUCKET=hw26-files
+export STORAGE_REGION=us-east-1
+
 export SKIP_VAULT=1
 ```
 
@@ -587,31 +793,65 @@ npm run migrate
 npm run seed
 ```
 
-Verify wrappers:
+Verify HW26 wrappers:
 
 ```bash
-node -e "const s=require('./package.json').scripts;const need=['start:vault','demo:auth','demo:reuse','demo:rbac'];const bad=need.filter(k=>/with-secrets\\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+node -e "const s=require('./package.json').scripts;const need=['demo:upload','demo:multipart','demo:cdn'];const bad=need.filter(k=>!/with-secrets\\.sh/.test(s[k]||''));console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
 
 grep -q 'SKIP_VAULT' scripts/with-secrets.sh && echo "emergency bypass present"
 ```
 
-Run auth demos:
+Run HW26 demos:
+
+```bash
+npm run demo:upload
+npm run demo:multipart
+npm run demo:multipart
+npm run demo:cdn
+```
+
+Expected upload output:
+
+```text
+intent=200
+key-from-server=1
+api-alive=0
+put-offline=200
+commit=200
+commit-without-bytes=409
+tampered=403
+expired=403
+```
+
+Expected multipart output on both runs:
+
+```text
+head-before-complete=404
+resumed-parts=1
+complete=200
+size-match=1
+etag-multipart=1
+```
+
+Expected CDN output:
+
+```text
+direct=403
+edge-miss=200
+edge-hit=200
+cache-hit=1
+new-name=1
+new-url=200
+content-changed=1
+```
+
+Previous auth demos remain available:
 
 ```bash
 npm run demo:auth
 npm run demo:reuse
 npm run demo:rbac
 ```
-
-Expected invariants are documented in `## Auth`.
-
-Verify explicit algorithm allowlist:
-
-```bash
-grep -rniE --include='*.ts' --include='*.js' --exclude-dir=node_modules --exclude-dir=dist "algorithms[[:space:]]*[:=,}]|['\"]algorithms['\"]|algorithms\(" .
-```
-
-Expected: at least one match.
 
 Verify no private key is tracked:
 
@@ -624,24 +864,22 @@ git ls-files -z \
 
 Expected: no output.
 
-Verify tracked env files:
-
-```bash
-for f in $(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -vE '\.(example|sample|template|dist)$'); do
-  grep -lE '=(amqps?|postgres(ql)?|redis|https?)://[^ ]*:[^ @]+@' "$f"
-done
-```
-
-Expected: no output.
-
-Verify README sections:
+Verify required README sections:
 
 ```bash
 grep -rlE '^#{1,3} +Grading' --include='README.md' --exclude-dir=node_modules . | wc -l
+grep -rlE '^#{1,3} +Files' --include='README.md' --exclude-dir=node_modules . | wc -l
 grep -rlE '^#{1,3} +Auth' --include='README.md' --exclude-dir=node_modules . | wc -l
 ```
 
-Expected: both values are at least `1`.
+Expected: all values are at least `1`.
+
+Final checks:
+
+```bash
+npx tsc --noEmit
+git diff --check
+```
 
 ## Main project structure
 
@@ -658,8 +896,19 @@ src/
 │   ├── password.ts
 │   ├── roles.decorator.ts
 │   └── roles.guard.ts
+├── cdn/
+│   └── edge-server.ts
 ├── config/
 ├── entities/
+├── files/
+│   ├── content-hash.ts
+│   ├── file-types.ts
+│   ├── files.controller.ts
+│   ├── files.module.ts
+│   ├── files.service.ts
+│   ├── multipart.ts
+│   ├── storage.client.ts
+│   └── storage.config.ts
 ├── migrations/
 ├── orders/
 ├── outbox/
@@ -673,6 +922,9 @@ src/
 ├── demo-session.ts
 ├── demo-ratelimit.ts
 ├── demo-queue.ts
+├── demo-upload.ts
+├── demo-multipart.ts
+├── demo-cdn.ts
 ├── demo-outbox.ts
 ├── demo-crash-write.ts
 ├── demo-crash-relay.ts
@@ -691,4 +943,4 @@ test/
 
 ## Submission
 
-Submit the Pull Request from the `hw-24` branch.
+Submit the Pull Request from the `hw-26` branch.
