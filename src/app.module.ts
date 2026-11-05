@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AuthModule } from './auth/auth.module';
 
 import { AppController } from './app.controller';
 import { validateEnv } from './config/env.schema';
@@ -16,6 +17,7 @@ import { OrdersService } from './orders/orders.service';
       envFilePath: '.env',
       validate: validateEnv,
     }),
+    AuthModule,
   ],
   controllers: [AppController, OrdersController],
   providers: [

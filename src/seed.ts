@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 
 import AppDataSource from './data-source';
+import { hashPassword } from './auth/password';
 
 async function seed(): Promise<void> {
   await AppDataSource.initialize();
@@ -10,6 +11,8 @@ async function seed(): Promise<void> {
   try {
     await queryRunner.connect();
     await queryRunner.startTransaction();
+
+    const demoPasswordHash = await hashPassword('Password123!');
 
     await queryRunner.query(`
       INSERT INTO users (
@@ -35,6 +38,25 @@ async function seed(): Promise<void> {
         full_name = EXCLUDED.full_name,
         balance = EXCLUDED.balance
     `);
+
+    await queryRunner.query(
+      `
+        UPDATE users
+        SET
+          password_hash = $1,
+          role = CASE
+            WHEN email = 'oleh@example.com' THEN 'seller'
+            WHEN email = 'maria@example.com' THEN 'admin'
+            ELSE 'buyer'
+          END
+        WHERE email IN (
+          'anna@example.com',
+          'oleh@example.com',
+          'maria@example.com'
+        )
+      `,
+      [demoPasswordHash],
+    );
 
     await queryRunner.query(`
       INSERT INTO products (

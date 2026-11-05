@@ -365,6 +365,134 @@ noeviction
 
 Sessions are also kept outside the cache Redis because LRU eviction must never randomly invalidate a user session.
 
+## Auth
+
+HW24 adds short-lived RS256 access JWTs, opaque rotating refresh tokens, reuse detection, logout revocation, RBAC and resource ownership checks.
+
+### Tokens
+
+Access token:
+
+```text
+format: JWT
+algorithm: RS256
+lifetime: 10 minutes
+claims: sub, role, jti, familyId
+```
+
+Refresh token:
+
+```text
+format: opaque random string
+storage: HMAC-SHA256 hash only
+lifetime: 30 days
+family: family_id
+```
+
+The raw refresh token is never stored in PostgreSQL. `token_hash` is calculated with HMAC and `REFRESH_TOKEN_PEPPER`.
+
+### Auth variables
+
+| Змінна                 | Джерело            | Навіщо                                     |
+| ---------------------- | ------------------ | ------------------------------------------ |
+| `JWT_KID`              | сховище (#11)      | active signing-key identifier              |
+| `JWT_PRIVATE_KEY`      | сховище (#11)      | RS256 signing key, base64-encoded PEM      |
+| `JWT_PUBLIC_KEY`       | сховище (#11)      | RS256 verification key, base64-encoded PEM |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11)      | HMAC pepper for refresh-token hashes       |
+| `DATABASE_URL`         | compose / оточення | PostgreSQL connection                      |
+| `REDIS_URL`            | compose / оточення | cache Redis                                |
+| `REDIS_QUEUE_URL`      | compose / оточення | queue/session/rate-limit Redis             |
+| `BROKER_URL`           | compose / оточення | RabbitMQ connection                        |
+
+There are no defaults for authentication secrets. Plain `npm run start` fails before database connection and names a missing auth variable. `npm run start:vault` and the auth demos use `scripts/with-secrets.sh`.
+
+### RS256 and explicit algorithm allowlist
+
+RS256 is used for compatibility with the course grading setup and clear asymmetric signing/verification separation. Verification explicitly allows only `RS256`; trust decisions never use `decode()` alone. A token with a modified payload and unchanged signature is rejected with `401`.
+
+### Refresh rotation and reuse detection
+
+A successful refresh marks the presented token as used and inserts the next token in the same `family_id` within one transaction. Reuse of an already-used refresh token is treated as compromise: the whole family is revoked, so the already-issued successor also returns `401`.
+
+The intended client strategy is to serialize refresh requests with one in-flight refresh promise, avoiding false-positive reuse detection from parallel client refreshes.
+
+### Why logout is two actions
+
+Logout must invalidate two different token types. The refresh family is server-side state and is marked `revoked_at`. The access JWT is self-contained and would otherwise survive until `exp`, so its `jti` is inserted into `access_token_denylist` until token expiry. Both writes are in PostgreSQL and are committed in one transaction, avoiding a new cross-storage dual-write window.
+
+### 401 vs 403
+
+```text
+missing / expired / invalid / revoked token -> 401
+valid token, wrong role                 -> 403
+valid token, foreign resource           -> 403
+```
+
+### RBAC and ownership
+
+Product creation requires `seller` or `admin`; a buyer gets `403`. `GET /orders/:id` authenticates first, then checks ownership against `orders.user_id`. Ownership is intentionally not inside the auth guard because the guard does not own resource data.
+
+The `role` claim is a cache, not the ultimate source of truth. A freshly demoted admin may keep admin rights until the short access token expires. Immediate permission revocation would require an online authorization lookup or another revocation mechanism.
+
+### Signing-key rotation and `kid`
+
+`kid` identifies the signing key. During overlap rotation, new tokens are signed by the new private key while both old and new public keys remain available for verification. After the maximum lifetime of old access tokens passes, the old public key can be removed.
+
+### Dev / prod key fingerprints
+
+Private keys are never committed. Public-key SHA-256 fingerprints can be generated with:
+
+```bash
+echo "$JWT_PUBLIC_KEY" \
+  | base64 --decode \
+  | openssl pkey -pubin -outform DER 2>/dev/null \
+  | openssl dgst -sha256
+```
+
+Development and production public-key fingerprints:
+
+```text
+dev  = ca8f2d35a48d5d789b94b6c53f79467020ad408e66f5984d6c0cf9c4d5b36e75
+prod = 4aec32999a9c23fbae73466a7550f6b1f944db9349017bc32c945f028c94e07d
+```
+
+The two fingerprints must differ.
+
+### Auth demos
+
+```bash
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
+```
+
+Expected:
+
+```text
+demo:auth
+login=200
+no-token=401
+with-token=200
+refresh=200
+logout=200|204
+after-logout=401
+refresh-after-logout=401
+
+demo:reuse
+login=200
+r1-refresh=200
+r1-reuse=401
+r2-after-reuse=401
+
+demo:rbac
+anon=401
+own=200
+foreign=403
+role-denied=403
+role-allowed=200|201
+tampered=401
+```
+
 ## Secrets
 
 Commands requiring database, broker or Redis access use:
@@ -413,13 +541,10 @@ npm run verify:provider
 
 ## Grading
 
-Run from the repository root:
+Run from the repository root.
 
 ```bash
 docker compose up -d --wait
-
-export REDIS_URL=redis://127.0.0.1:6381
-export REDIS_QUEUE_URL=redis://127.0.0.1:6382
 
 export DB_HOST=127.0.0.1
 export DB_PORT=6432
@@ -429,10 +554,32 @@ export DB_NAME=marketplace
 export DB_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 
+export REDIS_URL=redis://127.0.0.1:6381
+export REDIS_QUEUE_URL=redis://127.0.0.1:6382
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
+```
 
+Generate a one-time RS256 pair for grading:
 
+```bash
+node -e 'const {generateKeyPairSync}=require("node:crypto");
+const k=generateKeyPairSync("rsa",{modulusLength:2048,
+  privateKeyEncoding:{type:"pkcs8",format:"pem"},
+  publicKeyEncoding:{type:"spki",format:"pem"}});
+const fs=require("node:fs");
+fs.writeFileSync("/tmp/priv.b64",Buffer.from(k.privateKey).toString("base64"));
+fs.writeFileSync("/tmp/pub.b64",Buffer.from(k.publicKey).toString("base64"));'
+
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/pub.b64)"
+export REFRESH_TOKEN_PEPPER=grader-pepper
+```
+
+Prepare the project:
+
+```bash
 npm ci
 npx tsc --noEmit
 npm run build
@@ -440,95 +587,42 @@ npm run migrate
 npm run seed
 ```
 
-Run HW23 demos:
+Verify wrappers:
 
 ```bash
-npm run demo:cache
-npm run demo:session
-npm run demo:ratelimit
-npm run demo:queue
+node -e "const s=require('./package.json').scripts;const need=['start:vault','demo:auth','demo:reuse','demo:rbac'];const bad=need.filter(k=>/with-secrets\\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+
+grep -q 'SKIP_VAULT' scripts/with-secrets.sh && echo "emergency bypass present"
 ```
 
-Expected invariants:
-
-```text
-demo:cache
-cache-lru=1
-cache-maxmemory=1
-warmed>=50
-ttl-distinct>=5
-concurrent>=20
-db-calls=1
-db-calls-warm=0
-
-demo:session
-requests>=3
-sessions=1
-in-redis=1
-ttl-renewed=1
-
-demo:ratelimit
-instances>=2
-allowed=limit
-blocked>=1
-status=429
-retry-after=1
-
-demo:queue
-queue-noeviction=1
-attempts>=3
-completed=1
-added=2
-queued=1
-schedulers>=1
-scheduled-runs>=2
-```
-
-Verify Redis policies:
+Run auth demos:
 
 ```bash
-docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory-policy
-docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory
-docker exec marketplace-redis-queue redis-cli CONFIG GET maxmemory-policy
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
 ```
 
-Expected invariants:
+Expected invariants are documented in `## Auth`.
 
-```text
-cache: allkeys-lru
-cache maxmemory: > 0
-queue: noeviction
-```
-
-Static policy check:
+Verify explicit algorithm allowlist:
 
 ```bash
-grep -rniE   --exclude-dir=node_modules   --exclude-dir=dist   "maxmemory[ _-]*policy|noeviction|allkeys[ _-]*lru" .
+grep -rniE --include='*.ts' --include='*.js' --exclude-dir=node_modules --exclude-dir=dist "algorithms[[:space:]]*[:=,}]|['\"]algorithms['\"]|algorithms\(" .
 ```
 
-Verify demo wrappers:
-Verify demo wrappers:
+Expected: at least one match.
+
+Verify no private key is tracked:
 
 ```bash
-node -e "const s=require('./package.json').scripts;const bad=['demo:cache','demo:session','demo:ratelimit','demo:queue'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+git ls-files -z \
+  | grep -zv '^README.md$' \
+  | xargs -0 grep -lE \
+  'BEGIN ([A-Z]+ )?PRIVATE KEY|LS0tLS1CRUdJTiBQUklWQVRF|LS0tLS1CRUdJTiBSU0EgUFJJ|LS0tLS1CRUdJTiBFQyBQUklW'
 ```
 
-Expected:
-
-```text
-OK
-```
-
-Verify README:
-
-```bash
-grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
-grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
-```
-
-Expected: at least `1`.
-
-Expected: at least `1`.
+Expected: no output.
 
 Verify tracked env files:
 
@@ -540,10 +634,30 @@ done
 
 Expected: no output.
 
+Verify README sections:
+
+```bash
+grep -rlE '^#{1,3} +Grading' --include='README.md' --exclude-dir=node_modules . | wc -l
+grep -rlE '^#{1,3} +Auth' --include='README.md' --exclude-dir=node_modules . | wc -l
+```
+
+Expected: both values are at least `1`.
+
 ## Main project structure
 
 ```text
 src/
+├── auth/
+│   ├── access-denylist.ts
+│   ├── auth.config.ts
+│   ├── auth.controller.ts
+│   ├── auth.guard.ts
+│   ├── auth.module.ts
+│   ├── auth.service.ts
+│   ├── auth.tokens.ts
+│   ├── password.ts
+│   ├── roles.decorator.ts
+│   └── roles.guard.ts
 ├── config/
 ├── entities/
 ├── migrations/
@@ -551,15 +665,10 @@ src/
 ├── outbox/
 ├── rabbitmq/
 ├── redis/
-│   ├── cache.ts
-│   ├── product-cache.ts
-│   ├── session.ts
-│   ├── rate-limit.ts
-│   └── queue.ts
 ├── repositories/
-├── checkout.ts
-├── data-source.ts
-├── database.service.ts
+├── demo-auth.ts
+├── demo-reuse.ts
+├── demo-rbac.ts
 ├── demo-cache.ts
 ├── demo-session.ts
 ├── demo-ratelimit.ts
@@ -570,11 +679,9 @@ src/
 ├── seed.ts
 └── main.ts
 
-
 scripts/
 ├── with-secrets.sh
 └── realtime-demo.mjs
-
 
 test/
 ├── integration/
@@ -584,4 +691,4 @@ test/
 
 ## Submission
 
-Submit the Pull Request from the `hw-23` branch.
+Submit the Pull Request from the `hw-24` branch.

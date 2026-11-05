@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Headers,
   Param,
@@ -10,9 +11,11 @@ import {
   Post,
   Req,
   Res,
+  UseGuards,
 } from '@nestjs/common';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 
+import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard';
 import { OrderEventsService } from './order-events.service';
 import { OrdersService } from './orders.service';
 
@@ -38,7 +41,8 @@ export class OrdersController {
   createOrder(
     @Headers('idempotency-key')
     idempotencyKey: string | undefined,
-    @Body() body: CreateOrderRequest,
+    @Body()
+    body: CreateOrderRequest,
   ) {
     if (!idempotencyKey) {
       throw new BadRequestException('Idempotency-Key header is required');
@@ -49,19 +53,24 @@ export class OrdersController {
 
   @Patch(':id/status')
   updateOrderStatus(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() body: UpdateOrderStatusRequest,
+    @Param('id', ParseIntPipe)
+    id: number,
+    @Body()
+    body: UpdateOrderStatusRequest,
   ) {
     return this.ordersService.updateStatus(id, body.status);
   }
 
   @Get(':id/events')
   async streamOrderEvents(
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id', ParseIntPipe)
+    id: number,
     @Headers('last-event-id')
     lastEventIdHeader: string | undefined,
-    @Req() request: Request,
-    @Res() response: Response,
+    @Req()
+    request: AuthenticatedRequest,
+    @Res()
+    response: Response,
   ): Promise<void> {
     await this.ordersService.findById(id);
 
@@ -98,8 +107,28 @@ export class OrdersController {
     });
   }
 
+  @UseGuards(AuthGuard)
   @Get(':id')
-  getOrderById(@Param('id', ParseIntPipe) id: number) {
+  async getOrderById(
+    @Param('id', ParseIntPipe)
+    id: number,
+    @Req()
+    request: AuthenticatedRequest,
+  ) {
+    const user = request.user;
+
+    if (!user) {
+      throw new ForbiddenException('Access denied');
+    }
+
+    const userId = Number(user.sub);
+
+    const belongsToUser = await this.ordersService.belongsToUser(id, userId);
+
+    if (!belongsToUser) {
+      throw new ForbiddenException('Order belongs to another user');
+    }
+
     return this.ordersService.findById(id);
   }
 
@@ -127,7 +156,9 @@ export class OrdersController {
     },
   ): void {
     response.write(`id: ${event.id}\n`);
+
     response.write('event: order.status\n');
+
     response.write(
       `data: ${JSON.stringify({
         orderId: event.orderId,
