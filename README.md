@@ -16,9 +16,12 @@ Course project for Node.js / NestJS.
 - Socket.IO order-status rooms
 - SSE order-status stream with `Last-Event-ID` replay
 - RabbitMQ `order.placed` events with manual ack, prefetch and DLQ
-- transactional outbox relay
-- persistent inbox deduplication
+- transactional outbox relay and persistent inbox deduplication
 - API-level `Idempotency-Key`
+- Redis cache-aside with TTL jitter and stampede protection
+- Redis-backed rolling sessions
+- shared Redis sliding-window rate limit
+- BullMQ queue with retries, deduplication and scheduler
 
 ## Install and build
 
@@ -40,16 +43,27 @@ node dist/main.js
 docker compose up -d --wait
 ```
 
-| Service             | Address                  |
-| ------------------- | ------------------------ |
-| Marketplace API     | `http://localhost:3000`  |
-| PostgreSQL          | `127.0.0.1:5432`         |
-| PgBouncer           | `127.0.0.1:6432`         |
-| RabbitMQ AMQP       | `amqp://127.0.0.1:5672`  |
-| RabbitMQ Management | `http://127.0.0.1:15672` |
-| Pact Broker         | `http://127.0.0.1:9292`  |
+| Service                        | Address                  |
+| ------------------------------ | ------------------------ |
+| Marketplace API                | `http://localhost:3000`  |
+| PostgreSQL                     | `127.0.0.1:5432`         |
+| PgBouncer                      | `127.0.0.1:6432`         |
+| RabbitMQ AMQP                  | `amqp://127.0.0.1:5672`  |
+| RabbitMQ Management            | `http://127.0.0.1:15672` |
+| Redis cache                    | `redis://127.0.0.1:6381` |
+| Redis queue/session/rate-limit | `redis://127.0.0.1:6382` |
+| Pact Broker                    | `http://127.0.0.1:9292`  |
 
 RabbitMQ development credentials: `app/app`.
+
+The two Redis services intentionally use different eviction policies:
+
+```text
+redis-cache -> allkeys-lru + maxmemory > 0
+redis-queue -> noeviction
+```
+
+Cache data is disposable, while BullMQ and session/rate-limit state must not disappear because Redis evicted a key.
 
 ## Database
 
@@ -63,7 +77,7 @@ DB_PASSWORD=marketplace_password
 DB_NAME=marketplace
 ```
 
-Run schema setup:
+Schema setup:
 
 ```bash
 npm run build
@@ -85,46 +99,51 @@ order_event_effects
 idempotency_keys
 ```
 
-### Checkout and concurrency
+## Transactional outbox
 
-Checkout uses a single transaction for the business state.
+Order creation and its event are committed together:
 
-Stock protection uses an atomic conditional update:
+```text
+BEGIN
+→ reserve Idempotency-Key
+→ INSERT order
+→ INSERT order_items
+→ INSERT outbox_messages
+→ bind key to order
+→ COMMIT
+```
+
+The relay reads unpublished rows with:
 
 ```sql
-UPDATE products
-SET stock_quantity = stock_quantity - $1
-WHERE id = $2
-  AND stock_quantity >= $1
-RETURNING id, price, stock_quantity;
+WHERE published_at IS NULL
+ORDER BY created_at, id
+FOR UPDATE SKIP LOCKED
 ```
 
-Useful earlier demos:
+and uses this order:
 
-```bash
-npm run demo:race
-npm run demo:workers
-npm run demo:retry
+```text
+publish
+→ UPDATE published_at
+→ COMMIT
 ```
 
-Workers use `FOR UPDATE SKIP LOCKED`. Retry logic handles PostgreSQL `40001` and `40P01`.
+A relay crash can therefore produce duplicate delivery, but the consumer uses `processed_messages` plus an idempotent effect in one PostgreSQL transaction.
 
-## Testing
+Result:
 
-```bash
-npm run test:integration
-npm run test:e2e
-npm run test:contract
-npm run verify:provider
+```text
+at-least-once delivery
++
+idempotent effect
+=
+exactly-once result
 ```
-
-Integration tests use PostgreSQL Testcontainers and real SQL. E2E tests start the full Nest application. Pact verifies the `MarketplaceFrontend -> MarketplaceAPI` contract. CI includes Pact Broker and `can-i-deploy`.
 
 ## Realtime order status
 
 ### WebSocket
-
-Socket.IO clients send `join` with an order id. A socket joins `orders:<id>` only after ownership validation.
 
 ```bash
 node scripts/realtime-demo.mjs
@@ -132,12 +151,14 @@ node scripts/realtime-demo.mjs --same-room
 ```
 
 Expected isolation:
+Expected isolation:
 
 ```text
 A_RECEIVED=1
 B_RECEIVED=0
 ```
 
+Same-room control:
 Same-room control:
 
 ```text
@@ -153,251 +174,242 @@ Endpoint:
 GET /orders/:id/events
 ```
 
-Event format:
+`Last-Event-ID` supports replay of buffered events.
+
+## Redis: кеш, сесії, ліміти, черга
+
+HW23 adds Redis for performance and ephemeral shared state. Redis does not replace database invariants or idempotency.
+
+### Cache-aside
+
+The cache Redis uses:
 
 ```text
-id: 1
-event: order.status
-data: {"orderId":1,"status":"paid","occurredAt":"..."}
+maxmemory > 0
+maxmemory-policy=allkeys-lru
 ```
 
-`Last-Event-ID` replays buffered events with larger ids.
-
-## Trade-offs: WebSocket vs SSE
-
-| Criterion      | WebSocket                                 | SSE                                       |
-| -------------- | ----------------------------------------- | ----------------------------------------- |
-| Direction      | Bidirectional                             | Server to client                          |
-| Reconnect      | Supported, replay is custom               | Built in, `Last-Event-ID` supports replay |
-| Infrastructure | Needs WebSocket-aware proxy/load balancer | Standard HTTP streaming                   |
-| Best fit       | Interactive realtime flows                | Notifications and status feeds            |
-
-For order-status notifications, SSE is simpler when the client only receives updates. WebSocket is preferable for frequent bidirectional communication.
-
-With multiple application instances, Socket.IO rooms and in-memory replay must move to shared infrastructure such as the Socket.IO Redis adapter and shared replay storage.
-
-## RabbitMQ delivery
-
-RabbitMQ topology:
+The selected expensive read uses cache-aside:
 
 ```text
-exchange: shop.events
-routing key: order.placed
-queue: shop.order.placed
-DLX: shop.events.dlx
-DLQ: shop.order.placed.dlq
-queue type: quorum
-prefetch: 10
+cache hit → Redis only
+cache miss → database → Redis
 ```
 
-The producer uses a confirm channel and waits for broker confirms. The consumer uses manual acknowledgements and acknowledges only after the effect is complete.
-
-Delivery is **at-least-once**. Exactly-once delivery is not assumed.
-
-## Outbox та ідемпотентність
-
-HW22 removes the dual-write gap between PostgreSQL business state and RabbitMQ publication.
-
-### Transactional outbox
-
-Order creation and its outbox row are written in the same database transaction:
+Every cache write has TTL with jitter:
 
 ```text
-BEGIN
-→ reserve Idempotency-Key
-→ INSERT order
-→ INSERT order_items
-→ INSERT outbox_messages
-→ bind Idempotency-Key to order
-→ COMMIT
+TTL = 300 + random(0..60) seconds
 ```
 
-The producer is not called from inside this business transaction.
+The jitter prevents many keys warmed together from expiring at exactly the same second.
 
-The outbox event contains an explicit public contract instead of spreading a database or ORM entity.
+### Stampede protection
 
-Main outbox fields:
+A cold key uses a single-flight lock:
 
 ```text
-event_id
-aggregate_type
-aggregate_id
-type
-payload
-created_at
-published_at
-attempts
+SET lock:<key> <token> NX PX <ttl>
 ```
 
-Unpublished messages are found through a partial index using:
+Only the lock winner loads from the database. Other callers wait and re-read the cache.
 
-```sql
-WHERE published_at IS NULL
-```
+The lock is released with compare-and-delete through Lua, not a plain `DEL`, so one process cannot delete a lock already acquired by another owner.
 
-### Relay
+If the stampede lock fails, correctness is not affected: the worst result is extra database reads. That is acceptable because this lock protects performance, not a business invariant. Business correctness still belongs to database transactions, unique constraints and idempotency.
 
-The polling relay selects pending messages with:
-
-```sql
-SELECT ...
-FROM outbox_messages
-WHERE published_at IS NULL
-ORDER BY created_at, id
-FOR UPDATE SKIP LOCKED
-LIMIT $1;
-```
-
-For each row the order is:
-
-```text
-publish
-→ UPDATE published_at
-→ COMMIT
-```
-
-`publish` must happen before `UPDATE published_at`.
-
-If `published_at` were updated first and the process failed before publish, the event would be permanently lost. With publish first, a crash can create a duplicate, but duplicates can be safely handled with idempotency.
-
-The demo uses a **simulated relay crash**: an exception is thrown after broker publish confirmation but before `UPDATE published_at`.
-
-### Consumer idempotency
-
-The consumer uses two levels of protection.
-
-Level 1 — natural effect key:
-
-```sql
-INSERT INTO order_event_effects (...)
-ON CONFLICT (message_id)
-DO NOTHING;
-```
-
-Level 2 — persistent inbox:
-
-```text
-processed_messages(message_id, consumer)
-```
-
-The inbox marker and the effect are written in the **same PostgreSQL transaction**.
-
-Therefore a duplicate delivery is observable, but the effect is applied only once.
-
-This gives:
-
-```text
-at-least-once delivery
-+
-idempotent effect
-=
-exactly-once result
-```
-
-### API Idempotency-Key
-
-`POST /orders` requires:
-
-```text
-Idempotency-Key
-```
-
-Two requests with the same key represent the same intent and return the same order.
-
-The key is not derived from a request-body hash, so two intentional identical orders can still be created by using different keys.
-
-### Ordering
-
-`ORDER BY created_at, id` only controls relay selection order.
-
-It does **not** guarantee global broker delivery order because multiple relay workers can process rows concurrently through `SKIP LOCKED`.
-
-If strict ordering is required, it must be designed around an aggregate or partitioning key.
-
-### Outbox cleanup
-
-Published outbox rows must not grow forever.
-
-A production system should periodically archive or delete old rows where `published_at IS NOT NULL`, while keeping enough retention for diagnostics and replay requirements.
-
-### Demo results
-
-Happy path:
+### Cache demo
 
 ```bash
-npm run demo:outbox
+npm run demo:cache
 ```
 
-Measured result:
+Acceptance output:
 
 ```text
-requests=2
-orders=1
-outbox=1
-published=1
-deliveries=1
-effect=1
-processed=1
+cache-lru=1
+cache-maxmemory=1
+warmed=60
+ttl-distinct>=5
+concurrent=25
+db-calls=1
+db-calls-warm=0
 ```
 
-Business transaction failure:
+The cold-key concurrency test proves that at least 20 simultaneous requests result in exactly one database load. The next 100 reads of the warm key result in zero database calls.
+
+### Sessions
+
+Sessions are stored in the `noeviction` Redis instance rather than the LRU cache instance.
+
+This avoids unpredictable logout caused by cache eviction.
+
+Every successful read renews the session TTL:
+
+```text
+GET session
+→ EXPIRE session <ttl>
+```
+
+This is rolling TTL: an active user keeps the session alive.
 
 ```bash
-npm run demo:crash-write
+npm run demo:session
 ```
 
-Measured result:
+Acceptance output:
 
 ```text
-write-failed=1
-orders=0
-outbox=0
-published=0
-deliveries=0
-effect=0
+requests=3
+sessions=1
+in-redis=1
+ttl-renewed=1
 ```
 
-Relay failure:
+### Rate limit
+
+The rate limiter is shared through Redis, so multiple application instances consume the same limit.
+
+The implementation uses a sliding window stored in a sorted set. Cleanup, counting and insertion are executed atomically in one Lua script.
+
+A sliding window was chosen because it avoids the `2 × limit` burst that a fixed window can allow at a boundary.
+
+When the limit is exceeded:
+
+```text
+HTTP 429
+Retry-After: <seconds>
+```
 
 ```bash
-npm run demo:crash-relay
+npm run demo:ratelimit
 ```
 
-Measured result:
+Acceptance output:
 
 ```text
-published=2
-deliveries=2
-applied=1
-effect=1
-processed=1
+instances=2
+limit=5
+requests=8
+allowed=5
+blocked=3
+status=429
+retry-after=1
 ```
 
-The first relay publishes and fails before `published_at` is committed. The next relay sees the same pending outbox row and publishes it again.
+### BullMQ queue
 
-The consumer receives the event at least twice, but the persistent inbox and idempotent effect keep the business result at one.
+BullMQ uses the separate Redis instance configured with:
+
+```text
+maxmemory-policy=noeviction
+appendonly=yes
+appendfsync=everysec
+```
+
+The queue uses:
+
+```text
+attempts >= 3
+exponential backoff
+jitter
+jobId deduplication
+upsertJobScheduler
+```
+
+The worker connection uses:
+
+```text
+maxRetriesPerRequest=null
+```
+
+Two `add()` calls with the same `jobId` create one queue job.
+
+`removeOnComplete: true` is not used because immediate removal would remove the completed job identity and break the desired deduplication window.
+
+Schedulers use `upsertJobScheduler`, so application restarts do not create duplicate schedulers.
+
+```bash
+npm run demo:queue
+```
+
+Acceptance output:
+
+```text
+queue-noeviction=1
+attempts>=3
+completed=1
+added=2
+queued=1
+schedulers>=1
+scheduled-runs>=2
+```
+
+## Why two Redis instances
+
+Cache and BullMQ require incompatible Redis memory policies.
+
+Cache:
+
+```text
+allkeys-lru
+```
+
+Queue/session/rate-limit:
+
+```text
+noeviction
+```
+
+`maxmemory-policy` belongs to the Redis process, not to an individual logical database selected with `SELECT`, so one Redis process cannot safely serve both purposes.
+
+Sessions are also kept outside the cache Redis because LRU eviction must never randomly invalidate a user session.
 
 ## Secrets
 
-Commands that need database or broker credentials use:
+Commands requiring database, broker or Redis access use:
 
 ```text
 scripts/with-secrets.sh
 ```
 
-For grading, `SKIP_VAULT=1` allows already-provided environment variables to be used without access to the secret store.
-
-HW22 demo scripts:
+For grading:
 
 ```text
-demo:outbox
-demo:crash-write
-demo:crash-relay
+SKIP_VAULT=1
+```
+
+allows already-provided environment variables to be used without access to the secret store.
+
+HW23 demo scripts:
+
+```text
+demo:cache
+demo:session
+demo:ratelimit
+demo:queue
+```
+
+All four are wrapped directly in `package.json` with:
+
+```text
+bash scripts/with-secrets.sh dev ...
 ```
 
 All three are wrapped directly in `package.json` with `bash scripts/with-secrets.sh dev ...`.
 
 No live connection strings are stored in tracked `.env` files.
+
+## Testing
+
+Previous tests remain available:
+
+```bash
+npm run test:integration
+npm run test:e2e
+npm run test:contract
+npm run verify:provider
+```
 
 ## Grading
 
@@ -406,6 +418,9 @@ Run from the repository root:
 ```bash
 docker compose up -d --wait
 
+export REDIS_URL=redis://127.0.0.1:6381
+export REDIS_QUEUE_URL=redis://127.0.0.1:6382
+
 export DB_HOST=127.0.0.1
 export DB_PORT=6432
 export DB_USER=marketplace
@@ -413,8 +428,10 @@ export DB_PASSWORD=marketplace_password
 export DB_NAME=marketplace
 export DB_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
 export DATABASE_URL=postgresql://marketplace:marketplace_password@127.0.0.1:6432/marketplace
+
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
+
 
 npm ci
 npx tsc --noEmit
@@ -423,63 +440,93 @@ npm run migrate
 npm run seed
 ```
 
-Run HW22 demos:
+Run HW23 demos:
 
 ```bash
-npm run demo:outbox
-npm run demo:crash-write
-npm run demo:crash-relay
+npm run demo:cache
+npm run demo:session
+npm run demo:ratelimit
+npm run demo:queue
 ```
 
 Expected invariants:
 
 ```text
-demo:outbox
-requests=2
-orders=1
-outbox=1
-published=1
-effect=1
-processed=1
+demo:cache
+cache-lru=1
+cache-maxmemory=1
+warmed>=50
+ttl-distinct>=5
+concurrent>=20
+db-calls=1
+db-calls-warm=0
 
-demo:crash-write
-write-failed=1
-orders=0
-outbox=0
-published=0
-deliveries=0
-effect=0
+demo:session
+requests>=3
+sessions=1
+in-redis=1
+ttl-renewed=1
 
-demo:crash-relay
-deliveries>=2
-applied=1
-effect=1
-processed=1
+demo:ratelimit
+instances>=2
+allowed=limit
+blocked>=1
+status=429
+retry-after=1
+
+demo:queue
+queue-noeviction=1
+attempts>=3
+completed=1
+added=2
+queued=1
+schedulers>=1
+scheduled-runs>=2
 ```
 
-Verify `SKIP LOCKED`:
+Verify Redis policies:
 
 ```bash
-grep -rniE   --include='*.ts'   --exclude-dir=node_modules   --exclude-dir=dist   "skip[ _-]*locked" .
+docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory-policy
+docker exec marketplace-redis-cache redis-cli CONFIG GET maxmemory
+docker exec marketplace-redis-queue redis-cli CONFIG GET maxmemory-policy
 ```
 
-Verify conflict-based deduplication:
+Expected invariants:
+
+```text
+cache: allkeys-lru
+cache maxmemory: > 0
+queue: noeviction
+```
+
+Static policy check:
 
 ```bash
-grep -rniE   --include='*.ts'   --exclude-dir=node_modules   --exclude-dir=dist   "on[ _]*conflict|do[ _]+nothing|or[ _]*ignore|skip[ _]*duplicates|ignore[ _]*duplicates|23505|P2002" .
+grep -rniE   --exclude-dir=node_modules   --exclude-dir=dist   "maxmemory[ _-]*policy|noeviction|allkeys[ _-]*lru" .
 ```
 
 Verify demo wrappers:
+Verify demo wrappers:
 
 ```bash
-node -e "const s=require('./package.json').scripts;const bad=['demo:outbox','demo:crash-write','demo:crash-relay'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
+node -e "const s=require('./package.json').scripts;const bad=['demo:cache','demo:session','demo:ratelimit','demo:queue'].filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);console.log(bad.length===0?'OK':'without wrapper: '+bad.join(', '));process.exit(bad.length===0?0:1)"
 ```
 
-Verify README grading section:
+Expected:
+
+```text
+OK
+```
+
+Verify README:
 
 ```bash
 grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
+grep -rlE '^#{1,3} +Grading'   --include='README.md'   --exclude-dir=node_modules . | wc -l
 ```
+
+Expected: at least `1`.
 
 Expected: at least `1`.
 
@@ -493,17 +540,6 @@ done
 
 Expected: no output.
 
-Previous checks remain available:
-
-```bash
-npm run test:integration
-npm run test:e2e
-npm run test:contract
-npm run verify:provider
-node scripts/realtime-demo.mjs
-node scripts/realtime-demo.mjs --same-room
-```
-
 ## Main project structure
 
 ```text
@@ -513,30 +549,32 @@ src/
 ├── migrations/
 ├── orders/
 ├── outbox/
-│   ├── order-placed-event.ts
-│   ├── outbox-relay.ts
-│   ├── outbox.repository.ts
-│   └── run-relay.ts
 ├── rabbitmq/
-│   ├── broker.ts
-│   ├── order-placed.consumer.ts
-│   ├── order-placed.event.ts
-│   ├── order-placed-message.ts
-│   ├── order-placed.publisher.ts
-│   └── topology.ts
+├── redis/
+│   ├── cache.ts
+│   ├── product-cache.ts
+│   ├── session.ts
+│   ├── rate-limit.ts
+│   └── queue.ts
 ├── repositories/
 ├── checkout.ts
 ├── data-source.ts
 ├── database.service.ts
+├── demo-cache.ts
+├── demo-session.ts
+├── demo-ratelimit.ts
+├── demo-queue.ts
 ├── demo-outbox.ts
 ├── demo-crash-write.ts
 ├── demo-crash-relay.ts
 ├── seed.ts
 └── main.ts
 
+
 scripts/
 ├── with-secrets.sh
 └── realtime-demo.mjs
+
 
 test/
 ├── integration/
@@ -546,4 +584,4 @@ test/
 
 ## Submission
 
-Submit the Pull Request from the `hw-22` branch.
+Submit the Pull Request from the `hw-23` branch.
