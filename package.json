@@ -39,7 +39,16 @@
     "demo:rbac": "bash scripts/with-secrets.sh dev node dist/demo-rbac.js",
     "demo:upload": "bash scripts/with-secrets.sh dev node dist/demo-upload.js",
     "demo:multipart": "bash scripts/with-secrets.sh dev node dist/demo-multipart.js",
-    "demo:cdn": "bash scripts/with-secrets.sh dev node dist/demo-cdn.js"
+    "demo:cdn": "bash scripts/with-secrets.sh dev node dist/demo-cdn.js",
+    "image:build": "DOCKER_BUILDKIT=1 docker build --secret id=npm_token,src=.npm_token -f docker/Dockerfile -t rbdrm-marketplace:hw28 .",
+    "demo:image": "bash demo/demo-image.sh",
+    "scan": "bash scripts/scan-image.sh",
+    "cluster:up": "bash scripts/cluster-up.sh",
+    "cluster:down": "bash scripts/cluster-down.sh",
+    "up": "bash scripts/with-secrets.sh dev bash scripts/pulumi-up.sh",
+    "destroy": "bash scripts/with-secrets.sh dev bash scripts/pulumi-destroy.sh",
+    "demo:rollout": "bash demo/demo-rollout.sh",
+    "demo:pdb": "bash demo/demo-pdb.sh"
   },
   "repository": {
     "type": "git",

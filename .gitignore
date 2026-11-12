@@ -1,7 +1,11 @@
-node_modules/
-dist/
-.env
-secrets/
-backups/
+
 .DS_Store
+.env
+.npm_token
+.pulumi/
+backups/
+dist/
+node_modules/
+secrets/
 spec.json
+spec.json.npm_token
