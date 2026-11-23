@@ -1,0 +1,98 @@
+{
+  "Role": {
+    "Path": "/",
+    "RoleName": "nodejs-pro-hw31-github-teardown",
+    "RoleId": "AROAQOXT45GRYXUDMEXRK",
+    "Arn": "arn:aws:iam::031650015651:role/nodejs-pro-hw31-github-teardown",
+    "CreateDate": "2026-11-23T14:21:23+00:00",
+    "AssumeRolePolicyDocument": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {
+            "Federated": "arn:aws:iam::031650015651:oidc-provider/token.actions.githubusercontent.com"
+          },
+          "Action": "sts:AssumeRoleWithWebIdentity",
+          "Condition": {
+            "StringEquals": {
+              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+            },
+            "StringLike": {
+              "token.actions.githubusercontent.com:sub": "repo:Anastasiya-B/rbdrm-course-project:*"
+            }
+          }
+        }
+      ]
+    },
+    "MaxSessionDuration": 3600,
+    "MaxSigninSessionDuration": 3600,
+    "Tags": [
+      {
+        "Key": "Stack",
+        "Value": "base"
+      },
+      {
+        "Key": "ManagedBy",
+        "Value": "pulumi"
+      },
+      {
+        "Key": "Project",
+        "Value": "nodejs-pro-hw31"
+      }
+    ],
+    "RoleLastUsed": {}
+  },
+  "PermissionPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": [
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeNatGateways",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeTags",
+          "ec2:DeleteNatGateway",
+          "ec2:ReleaseAddress",
+          "ec2:DeleteRoute",
+          "ec2:DisassociateRouteTable",
+          "ec2:DeleteRouteTable",
+          "ec2:DeleteSubnet",
+          "ec2:DetachInternetGateway",
+          "ec2:DeleteInternetGateway",
+          "ec2:DeleteSecurityGroup",
+          "ec2:DeleteVpc",
+          "rds:DescribeDBInstances",
+          "rds:DescribeDBSubnetGroups",
+          "rds:ListTagsForResource",
+          "rds:DeleteDBInstance",
+          "rds:DeleteDBSubnetGroup",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetHealth",
+          "elasticloadbalancing:DescribeListeners",
+          "elasticloadbalancing:DeleteListener",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "tag:GetResources",
+          "budgets:ViewBudget",
+          "budgets:DeleteBudget",
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:ListRolePolicies",
+          "iam:DeleteRolePolicy",
+          "iam:DeleteRole",
+          "iam:GetOpenIDConnectProvider",
+          "iam:DeleteOpenIDConnectProvider"
+        ],
+        "Effect": "Allow",
+        "Resource": "*"
+      }
+    ]
+  }
+}

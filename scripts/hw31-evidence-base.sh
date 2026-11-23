@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA="$ROOT/infra/base"
 EVIDENCE="$ROOT/evidence"
 
-REGION="${AWS_REGION:-eu-central-1}"
+REGION="${AWS_REGION:-eu-north-1}"
 
 mkdir -p "$EVIDENCE"
 
@@ -49,8 +49,11 @@ SUBNET_AZS="$(
   aws ec2 describe-subnets \
     --region "$REGION" \
     --subnet-ids $ALL_SUBNETS \
-    --query 'length(unique_by(Subnets,&AvailabilityZone)[].AvailabilityZone)' \
-    --output text
+    --query 'Subnets[].AvailabilityZone' \
+    --output text \
+  | tr '\t' '\n' \
+  | sort -u \
+  | grep -c .
 )"
 
 PRIVATE_DEFAULT_ROUTE="$(
