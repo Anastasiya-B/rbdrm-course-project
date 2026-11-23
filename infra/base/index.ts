@@ -1,8 +1,10 @@
 import * as aws from '@pulumi/aws';
 import * as pulumi from '@pulumi/pulumi';
+
 export {
   githubOidcProviderArn,
   githubTeardownRoleArn,
+  githubTeardownRoleName,
   githubTeardownPolicyName,
 } from './iam';
 
@@ -236,3 +238,5 @@ export const albSecurityGroupId = albSecurityGroup.id;
 export const appSecurityGroupId = appSecurityGroup.id;
 
 export const rdsSecurityGroupId = rdsSecurityGroup.id;
+
+export const privateRouteTableId = privateRouteTable.id;

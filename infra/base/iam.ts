@@ -123,3 +123,5 @@ export const githubOidcProviderArn = oidcProvider.arn;
 export const githubTeardownRoleArn = teardownRole.arn;
 
 export const githubTeardownPolicyName = teardownPolicy.name;
+
+export const githubTeardownRoleName = teardownRole.name;
