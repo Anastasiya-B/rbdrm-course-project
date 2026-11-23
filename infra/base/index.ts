@@ -1,5 +1,10 @@
 import * as aws from '@pulumi/aws';
 import * as pulumi from '@pulumi/pulumi';
+export {
+  githubOidcProviderArn,
+  githubTeardownRoleArn,
+  githubTeardownPolicyName,
+} from './iam';
 
 const projectName = 'nodejs-pro-hw31';
 
