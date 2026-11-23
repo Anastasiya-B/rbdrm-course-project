@@ -5,6 +5,7 @@ import {
   Get,
   Post,
   Req,
+  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 
@@ -12,6 +13,7 @@ import { AuthGuard, type AuthenticatedRequest } from './auth/auth.guard';
 import { Roles } from './auth/roles.decorator';
 import { RolesGuard } from './auth/roles.guard';
 import { DatabaseService } from './database.service';
+import { isReady } from './lifecycle';
 
 const startedAt = Date.now();
 
@@ -43,6 +45,38 @@ export class AppController {
     };
   }
 
+  /*
+   * Liveness:
+   * "Is this process alive?"
+   *
+   * It deliberately does not depend on readiness,
+   * database state or downstream services.
+   */
+  @Get('healthz')
+  getHealthz() {
+    return {
+      status: 'alive',
+    };
+  }
+
+  /*
+   * Readiness:
+   * "May Kubernetes send new traffic here?"
+   */
+  @Get('readyz')
+  getReadyz() {
+    if (!isReady()) {
+      throw new ServiceUnavailableException('not ready');
+    }
+
+    return {
+      status: 'ready',
+    };
+  }
+
+  /*
+   * Previous course endpoint remains available.
+   */
   @Get('health')
   getHealth() {
     return {

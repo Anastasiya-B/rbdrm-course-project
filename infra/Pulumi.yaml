@@ -1,0 +1,3 @@
+name: rbdrm-hw28
+runtime: nodejs
+description: HW28 local Kubernetes deployment

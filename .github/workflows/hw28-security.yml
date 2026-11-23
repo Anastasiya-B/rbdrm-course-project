@@ -1,0 +1,32 @@
+name: HW28 Security Scan
+
+on:
+  push:
+    branches:
+      - hw-28
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  image-security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create BuildKit bait secret
+        run: |
+          printf '%s' 'hw28-ci-bait-token' > .npm_token
+
+      - name: Build production image
+        run: npm run image:build
+
+      - name: Verify image contract
+        run: npm run demo:image
+
+      - name: Run vulnerability scan
+        env:
+          SCAN_MAX: '10'
+        run: npm run scan

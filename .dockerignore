@@ -1,8 +1,16 @@
 node_modules
 dist
 .env
+.env.*
+!.env.example
 secrets
+.secrets
 .git
 .gitignore
+.vscode
 npm-debug.log
 spec.json
+.npm_token
+.pulumi
+backups
+coverage
