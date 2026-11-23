@@ -1,24 +1,28 @@
-import http from 'node:http';
 import fs from 'node:fs';
+import http from 'node:http';
 
 const targetUrl = process.env.TARGET_URL ?? 'http://127.0.0.1:30080/healthz';
 
 const stopFile = process.env.STOP_FILE ?? '/tmp/hw28-rollout-stop';
 
-const resultFile = process.env.RESULT_FILE ?? '/tmp/hw28-rollout-result.json';
+const codeFile = process.env.CODE_FILE ?? '/tmp/hw28-rollout-http-codes.txt';
 
 const minRequests = Number(process.env.MIN_REQUESTS ?? '5000');
 
-const concurrency = Number(process.env.CONCURRENCY ?? '32');
+const concurrency = Number(process.env.CONCURRENCY ?? '8');
 
 const requestTimeoutMs = Number(process.env.REQUEST_TIMEOUT_MS ?? '2000');
 
 const url = new URL(targetUrl);
 
 let requests = 0;
-let ok = 0;
-let failed = 0;
 let stopping = false;
+
+function recordCode(code) {
+  fs.appendFileSync(codeFile, `${code}\n`, 'utf8');
+
+  requests += 1;
+}
 
 function shouldStop() {
   if (!stopping && fs.existsSync(stopFile)) {
@@ -30,6 +34,18 @@ function shouldStop() {
 
 function requestOnce() {
   return new Promise(resolve => {
+    let settled = false;
+
+    const finish = code => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      recordCode(code);
+      resolve();
+    };
+
     const request = http.request(
       {
         protocol: url.protocol,
@@ -46,15 +62,11 @@ function requestOnce() {
         response.resume();
 
         response.on('end', () => {
-          requests += 1;
+          finish(response.statusCode ?? 0);
+        });
 
-          if (response.statusCode === 200) {
-            ok += 1;
-          } else {
-            failed += 1;
-          }
-
-          resolve();
+        response.on('error', () => {
+          finish(0);
         });
       },
     );
@@ -64,9 +76,7 @@ function requestOnce() {
     });
 
     request.on('error', () => {
-      requests += 1;
-      failed += 1;
-      resolve();
+      finish(0);
     });
 
     request.end();
@@ -84,17 +94,16 @@ async function main() {
     fs.unlinkSync(stopFile);
   }
 
-  const workers = Array.from({ length: concurrency }, () => worker());
+  fs.writeFileSync(codeFile, '', 'utf8');
+
+  const workers = Array.from(
+    {
+      length: concurrency,
+    },
+    () => worker(),
+  );
 
   await Promise.all(workers);
-
-  const result = {
-    requests,
-    ok,
-    failed,
-  };
-
-  fs.writeFileSync(resultFile, JSON.stringify(result), 'utf8');
 }
 
 main().catch(error => {

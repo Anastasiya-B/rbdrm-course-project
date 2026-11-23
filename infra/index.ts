@@ -347,6 +347,7 @@ const deployment = new k8s.apps.v1.Deployment(
   },
   {
     dependsOn: [secret],
+    ignoreChanges: ['spec.replicas'],
   },
 );
 

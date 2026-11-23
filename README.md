@@ -91,6 +91,8 @@ token-in-config=0
 token-in-layers=0
 ```
 
+`demo:image` checks the token in image history, image config and unpacked layer contents. Compressed gzip layers are decompressed before the token search.
+
 ## Vulnerability scan
 
 ```bash
@@ -139,6 +141,25 @@ npm run cluster:up
 
 The image is loaded into `kind` after build.
 
+Local platform:
+
+```text
+Docker Desktop + kind on macOS
+```
+
+Check Docker/kind memory:
+
+```bash
+docker info --format '{{.MemTotal}}' \
+  | awk '{printf "%.2f GiB\n", $1/1024/1024/1024}'
+```
+
+Docker/kind available memory on the development machine:
+
+```text
+7.65 GiB
+```
+
 Deploy with Pulumi:
 
 ```bash
@@ -168,6 +189,14 @@ HPA minReplicas=2
 HPA maxReplicas=5
 HPA CPU target=70%
 ```
+
+### Deployment replicas and HPA ownership
+
+The Deployment starts with `replicas=3` so a fresh installation immediately satisfies the availability requirements.
+
+After deployment, HPA owns runtime scaling between `2` and `5` replicas.
+
+`spec.replicas` therefore has two potential owners: Pulumi and the HPA controller. Pulumi ignores subsequent changes to `spec.replicas` after initial creation so it does not fight HPA scaling decisions.
 
 Check:
 
@@ -225,6 +254,25 @@ Run:
 npm run demo:rollout
 ```
 
+The demo performs a real Pulumi revision change while HTTP traffic is running.
+
+Each HTTP response code is written to a temporary evidence file, one code per line. `requests`, `ok` and `failed` are calculated from that file rather than only from in-memory counters.
+
+Example evidence:
+
+```text
+200
+200
+200
+200
+```
+
+Transport errors are recorded as:
+
+```text
+0
+```
+
 Measured result:
 
 ```text
@@ -234,8 +282,6 @@ ok=50809
 failed=0
 rollout-seconds=61
 ```
-
-The demo performs a real Pulumi revision change while HTTP traffic is running.
 
 Acceptance requirement:
 
@@ -300,7 +346,21 @@ npm run destroy
 
 ## Grading
 
-From repository root:
+Run from a fresh clone.
+
+Create local untracked secret files and Pulumi state directory:
+
+```bash
+mkdir -p secrets
+mkdir -p .pulumi
+
+printf '%s' 'hw28-grading-password' > secrets/db_password
+printf '%s' 'hw28-build-bait-token' > .npm_token
+```
+
+`secrets/`, `.npm_token` and `.pulumi/` are ignored by Git.
+
+Export grading environment:
 
 ```bash
 export SKIP_VAULT=1
@@ -309,9 +369,20 @@ export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
 export PULUMI_CONFIG_PASSPHRASE="hw28-grading"
 
 export JWT_KID="grader"
-export JWT_PRIVATE_KEY="<base64-private-key>"
-export JWT_PUBLIC_KEY="<base64-public-key>"
-export REFRESH_TOKEN_PEPPER="grader-pepper"
+
+openssl genpkey \
+  -algorithm RSA \
+  -pkeyopt rsa_keygen_bits:2048 \
+  -out /tmp/hw28-private.pem
+
+openssl rsa \
+  -pubout \
+  -in /tmp/hw28-private.pem \
+  -out /tmp/hw28-public.pem
+
+export JWT_PRIVATE_KEY="$(openssl base64 -A -in /tmp/hw28-private.pem)"
+export JWT_PUBLIC_KEY="$(openssl base64 -A -in /tmp/hw28-public.pem)"
+export REFRESH_TOKEN_PEPPER="$(openssl rand -hex 32)"
 ```
 
 Install:
@@ -331,7 +402,13 @@ npm run demo:image
 Check scan gate:
 
 ```bash
-SCAN_MAX=-1 npm run scan; test $? -ne 0
+set +e
+SCAN_MAX=-1 npm run scan
+NEGATIVE_SCAN_EXIT=$?
+set -e
+
+test "$NEGATIVE_SCAN_EXIT" -ne 0
+
 SCAN_MAX=99999 npm run scan
 ```
 
