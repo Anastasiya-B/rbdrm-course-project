@@ -1,4 +1,4 @@
-# HW28–HW29 — Zero-Downtime Kubernetes Deployment & Observability
+# HW28–HW31 — Kubernetes, Observability & AWS Infrastructure
 
 NestJS application deployed to a local `kind` cluster with Pulumi, rolling updates, readiness/liveness probes, PDB, HPA, runtime secrets, distroless Docker image, vulnerability scanning, structured logging, RED metrics, OpenTelemetry tracing and a provisioned Grafana dashboard.
 
@@ -818,6 +818,290 @@ scripts/
 .github/workflows/
   hw28-security.yml
 ```
+
+## AWS
+
+смуга: основна
+
+teardown-run: `<REPLACE_AFTER_FINAL_WORKFLOW_DISPATCH_RUN>`
+
+region: `eu-north-1` (Europe/Stockholm)
+
+HW31 uses real AWS resources managed by Pulumi. The infrastructure is split into two stacks so that resources with hourly cost exist only for the duration of the demo:
+
+- `base` — AWS Budget, VPC, 2 public + 2 private subnets across two AZs, IGW, route tables, security groups and GitHub OIDC/IAM. No hourly resources.
+- `demo` — RDS PostgreSQL Multi-AZ instance, internet-facing ALB with Lambda target, and an optional NAT Gateway controlled by `withNat`.
+
+### AWS account and cost guardrail
+
+The work was performed on the AWS Free plan without upgrading to Paid. The first AWS resource in `base` is a monthly COST budget with a `$5` limit and an ACTUAL notification at 20% using `GREATER_THAN` and `PERCENTAGE`.
+
+The budget is an alert, not an immediate circuit breaker. The real guardrail for this homework is short-lived `demo` infrastructure plus the scheduled/manual teardown workflow.
+
+### Pricing
+
+Pricing sources checked on **2026-11-23**:
+
+- AWS Elastic Load Balancing pricing: hourly or partial-hour ALB charge plus LCU usage.
+- Amazon VPC pricing: NAT Gateway is billed per provisioned hour or partial hour, plus data processing; public IPv4 is billed separately.
+- Course reference snapshot dated **2026-08-24** gives the exact Frankfurt (`eu-central-1`) reference rates used by the assignment and notes that the same stack in Stockholm was about 9.8% cheaper in that comparison.
+
+For the actual homework region `eu-north-1`, the table below uses the assignment's Stockholm comparison as the course reference. It is an estimate for the exercise, not a production quote; AWS pricing should be rechecked before production use.
+
+| Item                                   |     eu-north-1 course reference | Billing note                                                                                                                                     |
+| -------------------------------------- | ------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ALB                                    |               ≈ `$0.02395/hour` | Derived from the assignment's Stockholm comparison (≈11.3% below `$0.02700/hour` Frankfurt reference); LCU is additional.                        |
+| RDS `db.t4g.micro` PostgreSQL Multi-AZ |               ≈ `$0.03293/hour` | Derived from the assignment's Stockholm comparison (≈11% below `$0.03700/hour` Frankfurt reference).                                             |
+| Public IPv4 × 2 for ALB                |                 `$0.01000/hour` | `$0.00500/hour` per public IPv4; assignment notes this does not change between Frankfurt and Stockholm.                                          |
+| gp3 20 GiB, Multi-AZ                   | regional monthly storage charge | Storage is charged separately from the DB instance; the assignment's Frankfurt snapshot was `$0.274/GiB-month`.                                  |
+| NAT Gateway, optional demo only        |        ≈ `$0.04602/hour` + IPv4 | Derived from the assignment's Stockholm comparison (≈11.5% below `$0.052/hour` Frankfurt reference). Partial NAT hours are billed as full hours. |
+
+The assignment's reference full stack was `$0.08191/hour` in Frankfurt. Applying its documented 9.8% Stockholm difference gives an exercise reference of approximately `$0.07387/hour` for the comparable Stockholm stack before any different real traffic/LCU usage.
+
+The NAT measurement was intentionally short-lived:
+
+```text
+nat-minutes=5
+nat-billed-hours=1
+```
+
+The values differ because AWS bills each partial NAT Gateway hour as a full hour.
+
+### Network
+
+Verified `base` evidence:
+
+```text
+vpc-id=vpc-0aea289813a3a9ed4
+public-subnets=2
+private-subnets=2
+subnet-azs=2
+private-default-route=0
+security-groups=3
+tagged-resources=16
+```
+
+The private route table has no `0.0.0.0/0` route to the Internet Gateway. NAT is not part of the permanent `base` stack.
+
+Default tags are applied through the AWS Pulumi provider:
+
+```text
+Project=nodejs-pro-hw31
+Stack=<base|demo>
+ManagedBy=pulumi
+```
+
+### GitHub OIDC and IAM
+
+GitHub Actions authenticates to AWS with `sts:AssumeRoleWithWebIdentity` through the GitHub OIDC provider:
+
+```text
+https://token.actions.githubusercontent.com
+```
+
+The trust policy restricts the audience to:
+
+```text
+sts.amazonaws.com
+```
+
+and the subject to this repository:
+
+```text
+repo:Anastasiya-B/rbdrm-course-project:*
+```
+
+The teardown permission policy intentionally contains no wildcard `Action`. `Resource: "*"` is used where the AWS APIs used by teardown/verification do not support practical resource-level restriction for this exercise.
+
+Each permission is used for one of the following teardown or verification operations:
+
+| IAM Action                                   | Why it is required                                                |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `ec2:DescribeAccountAttributes`              | Read EC2 account/network attributes used by the provider.         |
+| `ec2:DescribeAddresses`                      | Verify and release Elastic IP addresses.                          |
+| `ec2:DescribeAvailabilityZones`              | Read AZ metadata for the VPC/subnets.                             |
+| `ec2:DescribeInternetGateways`               | Read IGW state before deletion.                                   |
+| `ec2:DescribeNatGateways`                    | Verify NAT state and final `nat-left` count.                      |
+| `ec2:DescribeNetworkInterfaces`              | Inspect ENIs that can block VPC/SG deletion.                      |
+| `ec2:DescribeRouteTables`                    | Read route tables before teardown.                                |
+| `ec2:DescribeSecurityGroups`                 | Read security groups before teardown.                             |
+| `ec2:DescribeSubnets`                        | Read subnet state before teardown.                                |
+| `ec2:DescribeTags`                           | Read AWS tags used by Pulumi/provider teardown.                   |
+| `ec2:DescribeVpcAttribute`                   | Read VPC attributes used by the provider.                         |
+| `ec2:DescribeVpcs`                           | Read/verify the VPC; this is the positive IAM simulation action.  |
+| `ec2:DeleteNatGateway`                       | Delete the optional NAT Gateway.                                  |
+| `ec2:ReleaseAddress`                         | Release the NAT Elastic IP.                                       |
+| `ec2:DeleteRoute`                            | Remove the optional private default route.                        |
+| `ec2:DisassociateRouteTable`                 | Remove subnet/route-table associations.                           |
+| `ec2:DeleteRouteTable`                       | Delete route tables.                                              |
+| `ec2:DeleteSubnet`                           | Delete public/private subnets.                                    |
+| `ec2:DetachInternetGateway`                  | Detach the IGW from the VPC.                                      |
+| `ec2:DeleteInternetGateway`                  | Delete the IGW.                                                   |
+| `ec2:DeleteSecurityGroup`                    | Delete ALB/app/RDS security groups.                               |
+| `ec2:DeleteVpc`                              | Delete the VPC.                                                   |
+| `rds:DescribeDBInstances`                    | Read RDS state and calculate `rds-left`.                          |
+| `rds:DescribeDBSubnetGroups`                 | Read the DB subnet group before deletion.                         |
+| `rds:DescribeEvents`                         | Read RDS failover events.                                         |
+| `rds:ListTagsForResource`                    | Read RDS tags during provider operations.                         |
+| `rds:DeleteDBInstance`                       | Delete the demo PostgreSQL instance.                              |
+| `rds:DeleteDBSubnetGroup`                    | Delete the DB subnet group.                                       |
+| `elasticloadbalancing:DescribeListeners`     | Read ALB listeners.                                               |
+| `elasticloadbalancing:DescribeLoadBalancers` | Read ALB state and calculate `alb-left`.                          |
+| `elasticloadbalancing:DescribeTags`          | Read ALB tags.                                                    |
+| `elasticloadbalancing:DescribeTargetGroups`  | Read target-group state.                                          |
+| `elasticloadbalancing:DescribeTargetHealth`  | Verify target health.                                             |
+| `elasticloadbalancing:DeregisterTargets`     | Remove Lambda target registration.                                |
+| `elasticloadbalancing:DeleteListener`        | Delete the HTTP listener.                                         |
+| `elasticloadbalancing:DeleteTargetGroup`     | Delete the target group.                                          |
+| `elasticloadbalancing:DeleteLoadBalancer`    | Delete the ALB.                                                   |
+| `lambda:GetFunction`                         | Read Lambda function state.                                       |
+| `lambda:GetFunctionConfiguration`            | Read Lambda configuration.                                        |
+| `lambda:GetPolicy`                           | Read Lambda resource policy.                                      |
+| `lambda:ListTags`                            | Read Lambda tags.                                                 |
+| `lambda:RemovePermission`                    | Remove ALB invoke permission.                                     |
+| `lambda:DeleteFunction`                      | Delete the Lambda target.                                         |
+| `iam:GetRole`                                | Read IAM roles.                                                   |
+| `iam:GetRolePolicy`                          | Read inline role policies.                                        |
+| `iam:GetOpenIDConnectProvider`               | Read the GitHub OIDC provider.                                    |
+| `iam:ListRolePolicies`                       | Enumerate inline role policies before role deletion.              |
+| `iam:ListAttachedRolePolicies`               | Enumerate managed policies attached to the demo Lambda role.      |
+| `iam:DetachRolePolicy`                       | Detach `AWSLambdaBasicExecutionRole`.                             |
+| `iam:DeleteRolePolicy`                       | Delete the teardown inline policy.                                |
+| `iam:DeleteRole`                             | Delete IAM roles created by the stacks.                           |
+| `iam:DeleteOpenIDConnectProvider`            | Delete the GitHub OIDC provider.                                  |
+| `budgets:ViewBudget`                         | Read the HW31 budget.                                             |
+| `budgets:ModifyBudget`                       | Authorize budget modification/deletion during teardown.           |
+| `aws-portal:ViewBilling`                     | Billing/budget read authorization used by the budget API.         |
+| `aws-portal:ModifyBilling`                   | Billing/budget modification authorization used by the budget API. |
+| `tag:GetResources`                           | Count tagged project resources after teardown.                    |
+
+`simulate-principal-policy` evidence:
+
+```text
+sim-allowed=allowed
+sim-denied=implicitDeny
+```
+
+The positive simulation uses `ec2:DescribeVpcs`. The negative simulation uses `s3:PutObject`, which is intentionally absent from the teardown role.
+
+### RDS Multi-AZ versus my HW15 database stack
+
+In HW15 I was responsible for the database topology myself: primary/replica roles, connection routing through PgBouncer and the backup script were application/infrastructure responsibilities. With RDS Multi-AZ instance deployment, AWS takes over provisioning and maintaining the standby instance in another AZ, replication required by the Multi-AZ service, infrastructure-level failover, instance replacement, managed backups/retention and much of the underlying database host maintenance.
+
+RDS does **not** take over application-level responsibilities. The application still owns schema/migrations, credentials and secret handling, connection-pool configuration, retry/reconnect behaviour during failover, observability, query/index performance, data-retention policy and restore testing. If PgBouncer or another application-level pool/proxy is required by the workload, that is still an architectural choice rather than something Multi-AZ automatically replaces.
+
+Measured failover evidence:
+
+```text
+az-before=eu-north-1b
+az-after=eu-north-1a
+failover-seconds=79
+event=Multi-AZ instance failover completed
+```
+
+### ALB demo
+
+The ALB is internet-facing and spans the two public subnets. Its target is a Lambda function, which avoids adding an EC2 instance and another public IPv4 line to the homework bill.
+
+Measured evidence:
+
+```text
+alb-dns=hw31-alb-6319a9a-276409093.eu-north-1.elb.amazonaws.com
+http-code=200
+target-state=healthy
+```
+
+### KMS and secrets
+
+KMS is not a replacement for the secret-storage approach from HW11. It is a cryptographic layer underneath secret storage: a secret such as an application `ENCRYPTION_KEY` can itself be encrypted with a KMS key, while the secret manager/vault still owns secret storage, access workflow, rotation and delivery to the application.
+
+This homework does not create a customer-managed KMS key because it is unnecessary for the acceptance criteria and would introduce another billable resource that can outlive a short demo. RDS storage encryption is enabled using the service-supported encryption path without creating a dedicated CMK for HW31.
+
+### Pulumi state backend: HW28 versus HW31
+
+HW28 used a local file backend:
+
+```text
+file://$PWD/.pulumi
+```
+
+That was appropriate for a local `kind` environment because deployment and teardown ran from the same development machine.
+
+HW31 uses Pulumi Cloud:
+
+```text
+https://app.pulumi.com
+```
+
+with stacks:
+
+```text
+zona2406-gmail-com-org/rbdrm-hw31-base/dev
+zona2406-gmail-com-org/rbdrm-hw31-demo/dev
+```
+
+The difference is intentional: the scheduled/manual GitHub Actions teardown runs on an ephemeral GitHub runner, so a state file stored only on the development laptop would not be accessible to CI. Pulumi Cloud provides the shared state required for `pulumi destroy` from both local development and GitHub Actions.
+
+GitHub Actions authenticates to Pulumi Cloud using GitHub OIDC and a short-lived Pulumi token rather than a long-lived AWS access key.
+
+### HW31 evidence
+
+Repository evidence:
+
+```text
+evidence/base.txt
+evidence/base-state.json
+evidence/iam.json
+evidence/iam.txt
+evidence/demos.txt
+```
+
+Current demo evidence:
+
+```text
+alb-dns=hw31-alb-6319a9a-276409093.eu-north-1.elb.amazonaws.com
+http-code=200
+target-state=healthy
+az-before=eu-north-1b
+az-after=eu-north-1a
+failover-seconds=79
+event=Multi-AZ instance failover completed
+nat-minutes=5
+nat-billed-hours=1
+```
+
+The GitHub Actions teardown run is the authoritative external teardown proof. The accepted final run must print:
+
+```text
+state-resources-left=0
+tagged-resources-left=0
+rds-left=0
+alb-left=0
+nat-left=0
+eip-left=0
+```
+
+### HW31 commands
+
+All fixed HW31 scripts are invoked through `scripts/with-secrets.sh`:
+
+```bash
+npm run up:base
+npm run up:demo
+npm run demo:alb
+npm run demo:failover
+npm run demo:nat
+npm run destroy:demo
+npm run destroy:base
+```
+
+The teardown workflow is available at:
+
+```text
+.github/workflows/teardown.yml
+```
+
+It supports both nightly `schedule` execution and manual `workflow_dispatch` execution with AWS OIDC authentication.
 
 ## Submission
 
