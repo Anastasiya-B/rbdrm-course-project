@@ -1,0 +1,9 @@
+config:
+  aws:region: eu-central-1
+  aws:defaultTags:
+    tags:
+      Project: nodejs-pro-hw31
+      Stack: base
+      ManagedBy: pulumi
+  rbdrm-hw31-base:budgetEmail: zona2406@gmail.com
+encryptionsalt: v1:SFswzyTsPNk=:v1:L7gcIIbwcKy9UWV5:aHXlrziDMJ+CM4pfEC4AwU2muYxfWg==
