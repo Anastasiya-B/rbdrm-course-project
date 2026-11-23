@@ -1,0 +1,9 @@
+config:
+  aws:region: eu-north-1
+  aws:defaultTags:
+    tags:
+      Project: nodejs-pro-hw31
+      Stack: demo
+      ManagedBy: pulumi
+  rbdrm-hw31-demo:withNat: 'false'
+  rbdrm-hw31-demo:baseStackRef: zona2406-gmail-com-org/rbdrm-hw31-base/dev
