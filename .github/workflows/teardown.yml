@@ -61,6 +61,7 @@ jobs:
 
       - name: Destroy demo stack
         working-directory: infra/demo
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -80,7 +81,7 @@ jobs:
           ROLE_URN="$(
             echo "$STACK_STATE" |
               jq -r '
-                .deployment.resources[]
+                (.deployment.resources // [])[]
                 | select(.urn | endswith("::github-teardown-role"))
                 | .urn
               '
@@ -89,7 +90,7 @@ jobs:
           POLICY_URN="$(
             echo "$STACK_STATE" |
               jq -r '
-                .deployment.resources[]
+                (.deployment.resources // [])[]
                 | select(.urn | endswith("::github-teardown-policy"))
                 | .urn
               '
@@ -98,7 +99,7 @@ jobs:
           OIDC_URN="$(
             echo "$STACK_STATE" |
               jq -r '
-                .deployment.resources[]
+                (.deployment.resources // [])[]
                 | select(.urn | endswith("::github-actions-oidc"))
                 | .urn
               '
@@ -108,7 +109,7 @@ jobs:
           test -n "$POLICY_URN"
           test -n "$OIDC_URN"
 
-          echo "Preserving teardown identity until verification"
+          echo "Preserving teardown identity until AWS verification"
 
           pulumi destroy --yes \
             --exclude "$ROLE_URN" \
@@ -137,24 +138,6 @@ jobs:
           set -euo pipefail
 
           R="$AWS_REGION"
-
-          TAGGED_REGION="$(
-            aws resourcegroupstaggingapi get-resources \
-              --region "$R" \
-              --tag-filters Key=Project,Values=nodejs-pro-hw31 \
-              --query 'length(ResourceTagMappingList)' \
-              --output text
-          )"
-
-          TAGGED_US_EAST_1="$(
-            aws resourcegroupstaggingapi get-resources \
-              --region us-east-1 \
-              --tag-filters Key=Project,Values=nodejs-pro-hw31 \
-              --query 'length(ResourceTagMappingList)' \
-              --output text
-          )"
-
-          TAGGED_RESOURCES_LEFT=$((TAGGED_REGION + TAGGED_US_EAST_1))
 
           RDS_LEFT="$(
             aws rds describe-db-instances \
@@ -185,6 +168,34 @@ jobs:
               --output text
           )"
 
+          TAGGED_RESOURCES_LEFT=999
+
+          for _ in {1..60}; do
+            TAGGED_REGION="$(
+              aws resourcegroupstaggingapi get-resources \
+                --region "$R" \
+                --tag-filters Key=Project,Values=nodejs-pro-hw31 \
+                --query 'length(ResourceTagMappingList)' \
+                --output text
+            )"
+
+            TAGGED_US_EAST_1="$(
+              aws resourcegroupstaggingapi get-resources \
+                --region us-east-1 \
+                --tag-filters Key=Project,Values=nodejs-pro-hw31 \
+                --query 'length(ResourceTagMappingList)' \
+                --output text
+            )"
+
+            TAGGED_RESOURCES_LEFT=$((TAGGED_REGION + TAGGED_US_EAST_1))
+
+            if [ "$TAGGED_RESOURCES_LEFT" -eq 0 ]; then
+              break
+            fi
+
+            sleep 5
+          done
+
           echo "tagged-resources-left=$TAGGED_RESOURCES_LEFT"
           echo "rds-left=$RDS_LEFT"
           echo "alb-left=$ALB_LEFT"
@@ -196,6 +207,27 @@ jobs:
           test "$ALB_LEFT" -eq 0
           test "$NAT_LEFT" -eq 0
           test "$EIP_LEFT" -eq 0
+
+      - name: Reconcile deleted OIDC provider in Pulumi state
+        working-directory: infra/base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pulumi stack select "$BASE_STACK"
+
+          OIDC_URN="$(
+            pulumi stack export |
+              jq -r '
+                (.deployment.resources // [])[]
+                | select(.urn | endswith("::github-actions-oidc"))
+                | .urn
+              '
+          )"
+
+          if [ -n "$OIDC_URN" ]; then
+            pulumi refresh --yes --target "$OIDC_URN"
+          fi
 
       - name: Destroy remaining teardown identity
         working-directory: infra/base
