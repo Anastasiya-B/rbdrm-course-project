@@ -132,6 +132,14 @@ jobs:
             -out "$PUBLIC_KEY_FILE" \
             >/dev/null 2>&1
 
+          PRIVATE_KEY_B64="$(
+            base64 -w 0 "$PRIVATE_KEY_FILE"
+          )"
+
+          PUBLIC_KEY_B64="$(
+            base64 -w 0 "$PUBLIC_KEY_FILE"
+          )"
+
           {
             echo 'APP_DB_PASSWORD<<EOF_DB'
             openssl rand -hex 24
@@ -142,11 +150,11 @@ jobs:
             echo 'EOF_KID'
 
             echo 'JWT_PRIVATE_KEY<<EOF_PRIVATE'
-            cat "$PRIVATE_KEY_FILE"
+            printf '%s\n' "$PRIVATE_KEY_B64"
             echo 'EOF_PRIVATE'
 
             echo 'JWT_PUBLIC_KEY<<EOF_PUBLIC'
-            cat "$PUBLIC_KEY_FILE"
+            printf '%s\n' "$PUBLIC_KEY_B64"
             echo 'EOF_PUBLIC'
 
             echo 'REFRESH_TOKEN_PEPPER<<EOF_PEPPER'
