@@ -42,47 +42,6 @@ jobs:
       - name: Install Pulumi CLI
         uses: pulumi/actions@v7
 
-      - name: Show GitHub OIDC claims
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RESPONSE="$(
-            curl -sS \
-              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
-          )"
-
-          TOKEN="$(echo "$RESPONSE" | jq -r '.value')"
-
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "Failed to obtain GitHub OIDC token"
-            echo "$RESPONSE"
-            exit 1
-          fi
-
-          PAYLOAD="$(echo "$TOKEN" | cut -d. -f2)"
-
-          PAYLOAD="${PAYLOAD//-/+}"
-          PAYLOAD="${PAYLOAD//_/\/}"
-
-          case $((${#PAYLOAD} % 4)) in
-            2) PAYLOAD="${PAYLOAD}==" ;;
-            3) PAYLOAD="${PAYLOAD}=" ;;
-          esac
-
-          echo "$PAYLOAD" \
-            | base64 -d \
-            | jq '{
-                aud,
-                sub,
-                repository,
-                repository_id,
-                repository_owner,
-                repository_owner_id,
-                ref
-              }'
-
       - name: Configure AWS credentials through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -103,33 +62,81 @@ jobs:
       - name: Destroy demo stack
         working-directory: infra/demo
         run: |
+          set -euo pipefail
+
           pulumi stack select "$DEMO_STACK"
           pulumi destroy --yes
 
-      - name: Destroy base stack
+      - name: Destroy base except teardown identity
         working-directory: infra/base
+        shell: bash
         run: |
-          pulumi stack select "$BASE_STACK"
-          pulumi destroy --yes
+          set -euo pipefail
 
-      - name: Verify teardown
+          pulumi stack select "$BASE_STACK"
+
+          STACK_STATE="$(pulumi stack export)"
+
+          ROLE_URN="$(
+            echo "$STACK_STATE" |
+              jq -r '
+                .deployment.resources[]
+                | select(.urn | endswith("::github-teardown-role"))
+                | .urn
+              '
+          )"
+
+          POLICY_URN="$(
+            echo "$STACK_STATE" |
+              jq -r '
+                .deployment.resources[]
+                | select(.urn | endswith("::github-teardown-policy"))
+                | .urn
+              '
+          )"
+
+          OIDC_URN="$(
+            echo "$STACK_STATE" |
+              jq -r '
+                .deployment.resources[]
+                | select(.urn | endswith("::github-actions-oidc"))
+                | .urn
+              '
+          )"
+
+          test -n "$ROLE_URN"
+          test -n "$POLICY_URN"
+          test -n "$OIDC_URN"
+
+          echo "Preserving teardown identity until verification"
+
+          pulumi destroy --yes \
+            --exclude "$ROLE_URN" \
+            --exclude "$POLICY_URN" \
+            --exclude "$OIDC_URN"
+
+      - name: Remove GitHub OIDC provider before tagged-resource check
+        working-directory: infra/base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OIDC_ARN="$(
+            pulumi stack output githubOidcProviderArn
+          )"
+
+          echo "Deleting OIDC provider: $OIDC_ARN"
+
+          aws iam delete-open-id-connect-provider \
+            --open-id-connect-provider-arn "$OIDC_ARN"
+
+      - name: Verify AWS teardown
         working-directory: infra/base
         shell: bash
         run: |
           set -euo pipefail
 
           R="$AWS_REGION"
-
-          pulumi stack select "$BASE_STACK"
-
-          STATE_RESOURCES_LEFT="$(
-            pulumi stack export |
-              jq '[
-                (.deployment.resources // [])
-                | .[]
-                | select(.type | startswith("aws:"))
-              ] | length'
-          )"
 
           TAGGED_REGION="$(
             aws resourcegroupstaggingapi get-resources \
@@ -147,7 +154,9 @@ jobs:
               --output text
           )"
 
-          TAGGED_RESOURCES_LEFT=$((TAGGED_REGION + TAGGED_US_EAST_1))
+          TAGGED_RESOURCES_LEFT=$(
+            (TAGGED_REGION + TAGGED_US_EAST_1)
+          )
 
           RDS_LEFT="$(
             aws rds describe-db-instances \
@@ -178,16 +187,44 @@ jobs:
               --output text
           )"
 
-          echo "state-resources-left=$STATE_RESOURCES_LEFT"
           echo "tagged-resources-left=$TAGGED_RESOURCES_LEFT"
           echo "rds-left=$RDS_LEFT"
           echo "alb-left=$ALB_LEFT"
           echo "nat-left=$NAT_LEFT"
           echo "eip-left=$EIP_LEFT"
 
-          test "$STATE_RESOURCES_LEFT" -eq 0
           test "$TAGGED_RESOURCES_LEFT" -eq 0
           test "$RDS_LEFT" -eq 0
           test "$ALB_LEFT" -eq 0
           test "$NAT_LEFT" -eq 0
           test "$EIP_LEFT" -eq 0
+
+      - name: Destroy remaining teardown identity
+        working-directory: infra/base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pulumi stack select "$BASE_STACK"
+          pulumi destroy --yes
+
+      - name: Verify Pulumi state
+        working-directory: infra/base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pulumi stack select "$BASE_STACK"
+
+          STATE_RESOURCES_LEFT="$(
+            pulumi stack export |
+              jq '[
+                (.deployment.resources // [])
+                | .[]
+                | select(.type | startswith("aws:"))
+              ] | length'
+          )"
+
+          echo "state-resources-left=$STATE_RESOURCES_LEFT"
+
+          test "$STATE_RESOURCES_LEFT" -eq 0
