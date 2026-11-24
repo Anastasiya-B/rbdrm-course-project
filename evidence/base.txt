@@ -1,7 +1,7 @@
-vpc-id=vpc-0aea289813a3a9ed4
+vpc-id=vpc-0ac5dd87a8345c819
 public-subnets=2
 private-subnets=2
 subnet-azs=2
 private-default-route=0
 security-groups=3
-tagged-resources=16
+tagged-resources=12

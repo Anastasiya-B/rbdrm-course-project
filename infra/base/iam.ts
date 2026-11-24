@@ -126,6 +126,7 @@ const teardownPolicy = new aws.iam.RolePolicy('github-teardown-policy', {
           'iam:GetOpenIDConnectProvider',
           'iam:ListRolePolicies',
           'iam:ListAttachedRolePolicies',
+          'iam:ListInstanceProfilesForRole',
           'iam:DetachRolePolicy',
           'iam:DeleteRolePolicy',
           'iam:DeleteRole',
