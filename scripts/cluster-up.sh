@@ -31,7 +31,7 @@ else
     --config "$ROOT/k8s/kind-config.yaml"
 fi
 
-load_image_by_tag() {
+load_regular_image() {
   local image="$1"
 
   kind load docker-image \
@@ -39,28 +39,18 @@ load_image_by_tag() {
     --name "$CLUSTER_NAME"
 }
 
-load_image_by_digest() {
+load_digest_image() {
   local image="$1"
 
-  local repository
   local digest
   local digest_short
   local local_tag
-  local archive
 
-  repository="${image%@*}"
   digest="${image##*@}"
   digest_short="${digest#sha256:}"
   digest_short="${digest_short:0:16}"
 
-  local_tag="${repository}:kind-${digest_short}"
-  archive="$(mktemp -t hw32-kind-image.XXXXXX.tar)"
-
-  cleanup_archive() {
-    rm -f "$archive"
-  }
-
-  trap cleanup_archive RETURN
+  local_tag="rbdrm-hw32-kind:${digest_short}"
 
   echo "Preparing kind image alias:"
   echo "  source=$image"
@@ -70,28 +60,40 @@ load_image_by_digest() {
     "$image" \
     "$local_tag"
 
-  docker image save \
-    --platform linux/amd64 \
-    --output "$archive" \
-    "$local_tag"
-
-  kind load image-archive \
-    "$archive" \
+  kind load docker-image \
+    "$local_tag" \
     --name "$CLUSTER_NAME"
 
-  mapfile -t KIND_NODES < <(
-    docker ps \
-      --filter "label=io.x-k8s.kind.cluster=$CLUSTER_NAME" \
-      --format '{{.Names}}'
-  )
+  for node in $(kind get nodes --name "$CLUSTER_NAME"); do
+    echo "Registering immutable digest reference on $node"
 
-  if [ "${#KIND_NODES[@]}" -eq 0 ]; then
-    echo "No kind nodes found for cluster: $CLUSTER_NAME" >&2
-    exit 1
-  fi
+    source_ref="$(
+      docker exec \
+        "$node" \
+        ctr \
+        --namespace=k8s.io \
+        images \
+        list \
+        --quiet \
+        | grep -F "$local_tag" \
+        | head -n 1
+    )"
 
-  for node in "${KIND_NODES[@]}"; do
-    echo "Registering digest alias on $node"
+    if [ -z "$source_ref" ]; then
+      echo "Loaded image alias not found in containerd on node: $node" >&2
+
+      docker exec \
+        "$node" \
+        ctr \
+        --namespace=k8s.io \
+        images \
+        list
+
+      exit 1
+    fi
+
+    echo "  containerd-source=$source_ref"
+    echo "  immutable-target=$image"
 
     docker exec \
       "$node" \
@@ -99,26 +101,37 @@ load_image_by_digest() {
       --namespace=k8s.io \
       images \
       tag \
-      "$local_tag" \
+      "$source_ref" \
       "$image"
 
-    docker exec \
+    if ! docker exec \
       "$node" \
       ctr \
       --namespace=k8s.io \
       images \
-      check \
-      name=="$image"
-  done
+      list \
+      --quiet \
+      | grep -Fx "$image" \
+      >/dev/null; then
 
-  rm -f "$archive"
-  trap - RETURN
+      echo "Immutable image reference was not registered on node: $node" >&2
+
+      docker exec \
+        "$node" \
+        ctr \
+        --namespace=k8s.io \
+        images \
+        list
+
+      exit 1
+    fi
+  done
 }
 
 if [[ "$IMAGE" == *@sha256:* ]]; then
-  load_image_by_digest "$IMAGE"
+  load_digest_image "$IMAGE"
 else
-  load_image_by_tag "$IMAGE"
+  load_regular_image "$IMAGE"
 fi
 
 kubectl cluster-info \
