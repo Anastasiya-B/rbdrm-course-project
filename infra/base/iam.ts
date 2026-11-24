@@ -29,11 +29,11 @@ const assumeRolePolicy = pulumi.all([oidcProvider.arn]).apply(([providerArn]) =>
         Condition: {
           StringEquals: {
             'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-          },
 
-          StringLike: {
-            'token.actions.githubusercontent.com:sub':
-              `repo:${githubOwner}@33089331/${githubRepo}@1353348427:*`,
+            'token.actions.githubusercontent.com:sub': [
+              `repo:${githubOwner}@33089331/${githubRepo}@1353348427:ref:refs/heads/hw-31`,
+              `repo:${githubOwner}@33089331/${githubRepo}@1353348427:ref:refs/heads/main`,
+            ],
           },
         },
       },
