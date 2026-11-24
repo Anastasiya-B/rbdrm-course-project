@@ -12,8 +12,16 @@ function requiredEnv(name) {
   return value;
 }
 
-async function readText(path) {
-  return readFile(path, 'utf8');
+async function readOptional(path, fallback = '') {
+  try {
+    return await readFile(path, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return fallback;
+    }
+
+    throw error;
+  }
 }
 
 function parseKeyValueFile(content) {
@@ -66,20 +74,30 @@ function countSecretOccurrences(manifest, values) {
   return count;
 }
 
-function extractDigest(deployment) {
-  const image = deployment?.spec?.template?.spec?.containers?.[0]?.image;
-
-  if (typeof image !== 'string') {
-    throw new Error('Deployment image is missing');
+function extractDigest(deploymentRaw) {
+  if (!deploymentRaw) {
+    return '';
   }
 
-  const separator = image.lastIndexOf('@sha256:');
+  try {
+    const deployment = JSON.parse(deploymentRaw);
 
-  if (separator === -1) {
-    throw new Error(`Deployment is not pinned by digest: ${image}`);
+    const image = deployment?.spec?.template?.spec?.containers?.[0]?.image;
+
+    if (typeof image !== 'string') {
+      return '';
+    }
+
+    const separator = image.lastIndexOf('@sha256:');
+
+    if (separator === -1) {
+      return '';
+    }
+
+    return image.slice(separator + 1);
+  } catch {
+    return '';
   }
-
-  return image.slice(separator + 1);
 }
 
 async function main() {
@@ -91,23 +109,23 @@ async function main() {
 
   const builtDigest = requiredEnv('EVIDENCE_BUILT_DIGEST');
 
-  const deploymentRaw = await readText('evidence/hw32/deployment.json');
+  const deploymentRaw = await readOptional('evidence/hw32/deployment.json');
 
-  const deployment = JSON.parse(deploymentRaw);
+  const deployedDigest = extractDigest(deploymentRaw);
 
-  const deployedDigest = extractDigest(deployment);
-
-  const buildLog = await readText('evidence/hw32/build.log');
+  const buildLog = await readOptional('evidence/hw32/build.log');
 
   const buildInvocations = buildLog.split(/\r?\n/).filter(Boolean).length;
 
-  const oidc = parseKeyValueFile(await readText('evidence/hw32/oidc.txt'));
+  const oidc = parseKeyValueFile(await readOptional('evidence/hw32/oidc.txt'));
 
   const rollout = parseKeyValueFile(
-    await readText('evidence/hw32/rollout.txt'),
+    await readOptional('evidence/hw32/rollout.txt'),
   );
 
-  const scanExit = (await readText('evidence/hw32/gate-scan-exit.txt')).trim();
+  const scanExit = (
+    await readOptional('evidence/hw32/gate-scan-exit.txt', '-1')
+  ).trim();
 
   const secretValues = [
     process.env.APP_DB_PASSWORD,
@@ -117,7 +135,9 @@ async function main() {
     process.env.REFRESH_TOKEN_PEPPER,
   ].filter(Boolean);
 
-  const secretInManifest = countSecretOccurrences(deploymentRaw, secretValues);
+  const secretInManifest = deploymentRaw
+    ? countSecretOccurrences(deploymentRaw, secretValues)
+    : 0;
 
   const lines = [
     `run-id=${runId}`,

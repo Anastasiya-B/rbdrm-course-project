@@ -7,7 +7,11 @@ ROOT="$(
   pwd
 )"
 
-export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-file://$ROOT/.pulumi}"
+PULUMI_DIR="$ROOT/.pulumi"
+
+mkdir -p "$PULUMI_DIR"
+
+export PULUMI_BACKEND_URL="${PULUMI_BACKEND_URL:-file://$PULUMI_DIR}"
 
 cd "$ROOT/infra"
 
