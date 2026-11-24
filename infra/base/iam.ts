@@ -32,7 +32,8 @@ const assumeRolePolicy = pulumi.all([oidcProvider.arn]).apply(([providerArn]) =>
           },
 
           StringLike: {
-            'token.actions.githubusercontent.com:sub': `repo:${githubOwner}/${githubRepo}:*`,
+            'token.actions.githubusercontent.com:sub':
+              `repo:${githubOwner}@33089331/${githubRepo}@1353348427:*`,
           },
         },
       },
