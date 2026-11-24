@@ -8,6 +8,7 @@ ROOT="$(
 )"
 
 PULUMI_DIR="$ROOT/.pulumi"
+STACK_NAME="${PULUMI_STACK_NAME:-dev}"
 
 mkdir -p "$PULUMI_DIR"
 
@@ -19,10 +20,11 @@ npx pulumi login \
   "$PULUMI_BACKEND_URL" \
   >/dev/null
 
-if ! npx pulumi stack select dev >/dev/null 2>&1; then
-  npx pulumi stack init dev
+if ! npx pulumi stack select "$STACK_NAME" >/dev/null 2>&1; then
+  npx pulumi stack init "$STACK_NAME"
 fi
 
 npx pulumi preview \
+  --stack "$STACK_NAME" \
   --non-interactive \
   --json

@@ -41,6 +41,7 @@ jobs:
       IMAGE_REF: ${{ inputs.image_ref }}
       BUILT_DIGEST: ${{ inputs.image_digest }}
       REVISION: ${{ inputs.revision }}
+      PULUMI_STACK_NAME: ci
 
     steps:
       - name: Checkout repository
@@ -203,7 +204,13 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
           REV: ${{ env.REVISION }}
-        run: npm run up
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scripts/with-secrets.sh \
+            dev \
+            bash scripts/hw32/pulumi-up.sh
 
       - name: Verify deployed image digest
         shell: bash

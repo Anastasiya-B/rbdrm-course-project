@@ -57,7 +57,10 @@ jobs:
             > .hw32/openapi-base.yaml
 
       - name: OpenAPI compatibility
+        shell: bash
         run: |
+          set -euo pipefail
+
           bash scripts/hw32/contract-gate.sh \
             .hw32/openapi-base.yaml \
             openapi/openapi.yaml
@@ -68,6 +71,7 @@ jobs:
   build:
     name: Build once
     runs-on: ubuntu-latest
+
     needs:
       - quality
 
@@ -129,6 +133,7 @@ jobs:
       IMAGE_REF: ${{ needs.build.outputs.image-ref }}
       BUILT_DIGEST: ${{ needs.build.outputs.digest }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PULUMI_STACK_NAME: ci
 
     steps:
       - name: Checkout repository
@@ -163,10 +168,7 @@ jobs:
             "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
 
           chmod +x /tmp/kind
-
-          sudo mv \
-            /tmp/kind \
-            /usr/local/bin/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
 
           kind version
 
@@ -187,13 +189,15 @@ jobs:
 
           DEPLOY_IMAGE="$IMAGE_REF@$BUILT_DIGEST"
 
-          docker pull \
-            "$DEPLOY_IMAGE"
+          docker pull "$DEPLOY_IMAGE"
 
           echo "DEPLOY_IMAGE=$DEPLOY_IMAGE" >> "$GITHUB_ENV"
 
       - name: Prepare evidence directory
+        shell: bash
         run: |
+          set -euo pipefail
+
           rm -rf evidence/hw32
           mkdir -p evidence/hw32
 
@@ -319,8 +323,8 @@ jobs:
           )"
 
           JWKS_URI="$(
-            printf '%s' "$CONFIG" |
-              jq -r '.jwks_uri'
+            printf '%s' "$CONFIG" \
+              | jq -r '.jwks_uri'
           )"
 
           TOKEN_RESPONSE="$(
@@ -333,8 +337,8 @@ jobs:
           )"
 
           TOKEN="$(
-            printf '%s' "$TOKEN_RESPONSE" |
-              jq -r '.value'
+            printf '%s' "$TOKEN_RESPONSE" \
+              | jq -r '.value'
           )"
 
           OIDC_TOKEN="$TOKEN" \
@@ -347,7 +351,13 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
           REV: ${{ env.BUILT_DIGEST }}
-        run: npm run up
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scripts/with-secrets.sh \
+            dev \
+            bash scripts/hw32/pulumi-up.sh
 
       - name: Capture deployment manifest
         shell: bash
@@ -391,8 +401,7 @@ jobs:
           EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVIDENCE_IMAGE_REF: ${{ needs.build.outputs.image-ref }}
           EVIDENCE_BUILT_DIGEST: ${{ needs.build.outputs.digest }}
-        run: |
-          node scripts/hw32/collect-evidence.mjs
+        run: node scripts/hw32/collect-evidence.mjs
 
       - name: Enforce image scan gate
         if: always()
