@@ -1,0 +1,239 @@
+name: HW32 Deploy by Digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: 'Existing GHCR image tag, e.g. ghcr.io/anastasiya-b/rbdrm-course-project:<sha>'
+        required: true
+        type: string
+
+      image_digest:
+        description: 'Existing image digest, sha256:<64 hex chars>'
+        required: true
+        type: string
+
+      revision:
+        description: 'Deployment revision label'
+        required: false
+        default: manual
+        type: string
+
+concurrency:
+  group: hw32-deploy
+  cancel-in-progress: false
+
+env:
+  PULUMI_CONFIG_PASSPHRASE: hw32-ci-local-state
+
+jobs:
+  deploy:
+    name: Promote existing digest
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+
+    env:
+      SKIP_VAULT: '1'
+      IMAGE_REF: ${{ inputs.image_ref }}
+      BUILT_DIGEST: ${{ inputs.image_digest }}
+      REVISION: ${{ inputs.revision }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Install Pulumi dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: Validate digest input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! printf '%s' "$BUILT_DIGEST" \
+            | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "image_digest must match sha256:<64 lowercase hex chars>" >&2
+            exit 1
+          fi
+
+      - name: Install kind
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KIND_VERSION="v0.30.0"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            -o /tmp/kind \
+            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+
+          kind version
+
+      - name: Verify kubectl
+        run: kubectl version --client
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull promoted image by digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEPLOY_IMAGE="$IMAGE_REF@$BUILT_DIGEST"
+
+          docker pull "$DEPLOY_IMAGE"
+
+          echo "DEPLOY_IMAGE=$DEPLOY_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Prepare ephemeral application secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRIVATE_KEY_FILE="$(mktemp)"
+          PUBLIC_KEY_FILE="$(mktemp)"
+
+          openssl genpkey \
+            -algorithm RSA \
+            -pkeyopt rsa_keygen_bits:2048 \
+            -out "$PRIVATE_KEY_FILE" \
+            >/dev/null 2>&1
+
+          openssl pkey \
+            -in "$PRIVATE_KEY_FILE" \
+            -pubout \
+            -out "$PUBLIC_KEY_FILE" \
+            >/dev/null 2>&1
+
+          {
+            echo 'APP_DB_PASSWORD<<EOF_DB'
+            openssl rand -hex 24
+            echo 'EOF_DB'
+
+            echo 'JWT_KID<<EOF_KID'
+            printf '%s\n' "hw32-${{ github.run_id }}"
+            echo 'EOF_KID'
+
+            echo 'JWT_PRIVATE_KEY<<EOF_PRIVATE'
+            cat "$PRIVATE_KEY_FILE"
+            echo 'EOF_PRIVATE'
+
+            echo 'JWT_PUBLIC_KEY<<EOF_PUBLIC'
+            cat "$PUBLIC_KEY_FILE"
+            echo 'EOF_PUBLIC'
+
+            echo 'REFRESH_TOKEN_PEPPER<<EOF_PEPPER'
+            openssl rand -hex 32
+            echo 'EOF_PEPPER'
+          } >> "$GITHUB_ENV"
+
+          rm -f \
+            "$PRIVATE_KEY_FILE" \
+            "$PUBLIC_KEY_FILE"
+
+      - name: Create kind cluster and load promoted image
+        env:
+          IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
+        run: npm run cluster:up
+
+      - name: Verify GitHub OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              https://token.actions.githubusercontent.com/.well-known/openid-configuration
+          )"
+
+          JWKS_URI="$(
+            printf '%s' "$CONFIG" \
+              | jq -r '.jwks_uri'
+          )"
+
+          TOKEN_RESPONSE="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
+          )"
+
+          TOKEN="$(
+            printf '%s' "$TOKEN_RESPONSE" \
+              | jq -r '.value'
+          )"
+
+          OIDC_TOKEN="$TOKEN" \
+          OIDC_JWKS_URI="$JWKS_URI" \
+          OIDC_POLICY_FILE=oidc/policy.json \
+            node scripts/hw32/oidc-gate.mjs
+
+      - name: Deploy existing digest with Pulumi
+        env:
+          IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
+          REV: ${{ env.REVISION }}
+        run: npm run up
+
+      - name: Verify deployed image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEPLOYED_IMAGE="$(
+            kubectl \
+              -n marketplace-hw28 \
+              get deployment \
+              marketplace-deployment \
+              -o jsonpath='{.spec.template.spec.containers[0].image}'
+          )"
+
+          EXPECTED_IMAGE="$IMAGE_REF@$BUILT_DIGEST"
+
+          echo "expected-image=$EXPECTED_IMAGE"
+          echo "deployed-image=$DEPLOYED_IMAGE"
+
+          test "$DEPLOYED_IMAGE" = "$EXPECTED_IMAGE"
+
+      - name: Zero-failure rollout gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MIN_REQUESTS=2000 \
+          IMAGE_NAME="$DEPLOY_IMAGE" \
+            npm run demo:rollout
+
+      - name: Destroy kind cluster
+        if: always()
+        run: npm run cluster:down

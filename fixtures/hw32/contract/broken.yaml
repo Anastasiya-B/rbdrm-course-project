@@ -1,0 +1,7 @@
+openapi: 3.0.3
+
+info:
+  title: HW32 Contract Gate Fixture
+  version: 1.0.1
+
+paths: {}
