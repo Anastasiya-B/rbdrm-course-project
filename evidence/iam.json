@@ -19,7 +19,7 @@
               "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
             },
             "StringLike": {
-              "token.actions.githubusercontent.com:sub": "repo:Anastasiya-B/rbdrm-course-project:*"
+              "token.actions.githubusercontent.com:sub": "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:*"
             }
           }
         }
