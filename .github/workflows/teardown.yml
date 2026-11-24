@@ -154,9 +154,7 @@ jobs:
               --output text
           )"
 
-          TAGGED_RESOURCES_LEFT=$(
-            (TAGGED_REGION + TAGGED_US_EAST_1)
-          )
+          TAGGED_RESOURCES_LEFT=$((TAGGED_REGION + TAGGED_US_EAST_1))
 
           RDS_LEFT="$(
             aws rds describe-db-instances \
