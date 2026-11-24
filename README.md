@@ -823,7 +823,7 @@ scripts/
 
 смуга: основна
 
-teardown-run: `<REPLACE_AFTER_FINAL_WORKFLOW_DISPATCH_RUN>`
+teardown-run: `https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45385253496`
 
 region: `eu-north-1` (Europe/Stockholm)
 
