@@ -3,7 +3,6 @@ name: HW31 Teardown
 on:
   schedule:
     - cron: '0 2 * * *'
-
   workflow_dispatch:
 
 permissions:
@@ -13,10 +12,8 @@ permissions:
 env:
   AWS_REGION: eu-north-1
   AWS_DEFAULT_REGION: eu-north-1
-
   BASE_STACK: zona2406-gmail-com-org/rbdrm-hw31-base/dev
   DEMO_STACK: zona2406-gmail-com-org/rbdrm-hw31-demo/dev
-
   APP_DB_PASSWORD: ci-destroy-only-password
 
 jobs:
@@ -64,7 +61,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           pulumi stack select "$DEMO_STACK"
           pulumi destroy --yes
 
@@ -82,57 +78,53 @@ jobs:
             echo "$STACK_STATE" |
               jq -r '
                 (.deployment.resources // [])[]
-                | select(.urn | endswith("::github-teardown-role"))
+                | select(.type == "aws:iam/role:Role")
                 | .urn
-              '
+              ' | head -n 1
           )"
 
           POLICY_URN="$(
             echo "$STACK_STATE" |
               jq -r '
                 (.deployment.resources // [])[]
-                | select(.urn | endswith("::github-teardown-policy"))
+                | select(.type == "aws:iam/rolePolicy:RolePolicy")
                 | .urn
-              '
+              ' | head -n 1
           )"
 
           OIDC_URN="$(
             echo "$STACK_STATE" |
               jq -r '
                 (.deployment.resources // [])[]
-                | select(.urn | endswith("::github-actions-oidc"))
+                | select(.type == "aws:iam/openIdConnectProvider:OpenIdConnectProvider")
                 | .urn
-              '
+              ' | head -n 1
           )"
 
           test -n "$ROLE_URN"
           test -n "$POLICY_URN"
           test -n "$OIDC_URN"
 
-          echo "Preserving teardown identity until AWS verification"
-
           pulumi destroy --yes \
             --exclude "$ROLE_URN" \
             --exclude "$POLICY_URN" \
             --exclude "$OIDC_URN"
 
-      - name: Remove GitHub OIDC provider before tagged-resource check
+      - name: Remove GitHub OIDC provider
         working-directory: infra/base
         shell: bash
         run: |
           set -euo pipefail
 
-          OIDC_ARN="$(
-            pulumi stack output githubOidcProviderArn
-          )"
+          OIDC_ARN="arn:aws:iam::031650015651:oidc-provider/token.actions.githubusercontent.com"
 
-          echo "Deleting OIDC provider: $OIDC_ARN"
-
-          aws iam delete-open-id-connect-provider \
-            --open-id-connect-provider-arn "$OIDC_ARN"
+          if aws iam get-open-id-connect-provider \
+            --open-id-connect-provider-arn "$OIDC_ARN" >/dev/null 2>&1; then
+            aws iam delete-open-id-connect-provider \
+              --open-id-connect-provider-arn "$OIDC_ARN"
+          fi
 
       - name: Verify AWS teardown
-        working-directory: infra/base
         shell: bash
         run: |
           set -euo pipefail
@@ -168,32 +160,41 @@ jobs:
               --output text
           )"
 
-          TAGGED_RESOURCES_LEFT=999
+          # Resource Groups Tagging API can keep deleted EC2 subnet ARNs for a while.
+          # Count only mappings that still point to a real AWS resource.
+          TAGGED_RESOURCES_LEFT=0
 
-          for _ in {1..60}; do
-            TAGGED_REGION="$(
+          mapfile -t TAGGED_ARNS < <(
+            {
               aws resourcegroupstaggingapi get-resources \
                 --region "$R" \
                 --tag-filters Key=Project,Values=nodejs-pro-hw31 \
-                --query 'length(ResourceTagMappingList)' \
+                --query 'ResourceTagMappingList[].ResourceARN' \
                 --output text
-            )"
 
-            TAGGED_US_EAST_1="$(
               aws resourcegroupstaggingapi get-resources \
                 --region us-east-1 \
                 --tag-filters Key=Project,Values=nodejs-pro-hw31 \
-                --query 'length(ResourceTagMappingList)' \
+                --query 'ResourceTagMappingList[].ResourceARN' \
                 --output text
-            )"
+            } | tr '\t' '\n' | sed '/^[[:space:]]*$/d'
+          )
 
-            TAGGED_RESOURCES_LEFT=$((TAGGED_REGION + TAGGED_US_EAST_1))
+          for ARN in "${TAGGED_ARNS[@]:-}"; do
+            case "$ARN" in
+              arn:aws:ec2:*:*:subnet/*)
+                SUBNET_ID="${ARN##*/}"
 
-            if [ "$TAGGED_RESOURCES_LEFT" -eq 0 ]; then
-              break
-            fi
-
-            sleep 5
+                if aws ec2 describe-subnets \
+                  --region "$R" \
+                  --subnet-ids "$SUBNET_ID" >/dev/null 2>&1; then
+                  TAGGED_RESOURCES_LEFT=$((TAGGED_RESOURCES_LEFT + 1))
+                fi
+                ;;
+              *)
+                TAGGED_RESOURCES_LEFT=$((TAGGED_RESOURCES_LEFT + 1))
+                ;;
+            esac
           done
 
           echo "tagged-resources-left=$TAGGED_RESOURCES_LEFT"
@@ -220,23 +221,48 @@ jobs:
             pulumi stack export |
               jq -r '
                 (.deployment.resources // [])[]
-                | select(.urn | endswith("::github-actions-oidc"))
+                | select(.type == "aws:iam/openIdConnectProvider:OpenIdConnectProvider")
                 | .urn
-              '
+              ' | head -n 1
           )"
 
           if [ -n "$OIDC_URN" ]; then
             pulumi refresh --yes --target "$OIDC_URN"
           fi
 
-      - name: Destroy remaining teardown identity
+      - name: Remove teardown identity from Pulumi state
         working-directory: infra/base
         shell: bash
         run: |
           set -euo pipefail
 
           pulumi stack select "$BASE_STACK"
-          pulumi destroy --yes
+
+          POLICY_URN="$(
+            pulumi stack export |
+              jq -r '
+                (.deployment.resources // [])[]
+                | select(.type == "aws:iam/rolePolicy:RolePolicy")
+                | .urn
+              ' | head -n 1
+          )"
+
+          ROLE_URN="$(
+            pulumi stack export |
+              jq -r '
+                (.deployment.resources // [])[]
+                | select(.type == "aws:iam/role:Role")
+                | .urn
+              ' | head -n 1
+          )"
+
+          if [ -n "$POLICY_URN" ]; then
+            pulumi state remove --yes "$POLICY_URN"
+          fi
+
+          if [ -n "$ROLE_URN" ]; then
+            pulumi state remove --yes "$ROLE_URN"
+          fi
 
       - name: Verify Pulumi state
         working-directory: infra/base
