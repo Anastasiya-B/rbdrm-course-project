@@ -1,3 +1,5 @@
+secretsprovider: default
+
 config:
   aws:region: eu-north-1
   aws:defaultTags:
