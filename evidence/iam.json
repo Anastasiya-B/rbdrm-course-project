@@ -2,9 +2,9 @@
   "Role": {
     "Path": "/",
     "RoleName": "nodejs-pro-hw31-github-teardown",
-    "RoleId": "AROAQOXT45GRYXUDMEXRK",
+    "RoleId": "AROAQOXT45GRZ557KS72K",
     "Arn": "arn:aws:iam::031650015651:role/nodejs-pro-hw31-github-teardown",
-    "CreateDate": "2026-11-23T14:21:23+00:00",
+    "CreateDate": "2026-11-24T10:45:24+00:00",
     "AssumeRolePolicyDocument": {
       "Version": "2012-10-17",
       "Statement": [
@@ -16,11 +16,11 @@
           "Action": "sts:AssumeRoleWithWebIdentity",
           "Condition": {
             "StringEquals": {
+              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
               "token.actions.githubusercontent.com:sub": [
                 "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:ref:refs/heads/hw-31",
                 "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:ref:refs/heads/main"
-              ],
-              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+              ]
             }
           }
         }
@@ -42,10 +42,7 @@
         "Value": "nodejs-pro-hw31"
       }
     ],
-    "RoleLastUsed": {
-      "LastUsedDate": "2026-11-24T10:22:55+00:00",
-      "Region": "eu-north-1"
-    }
+    "RoleLastUsed": {}
   },
   "PermissionPolicy": {
     "Version": "2012-10-17",
