@@ -60,9 +60,9 @@ This matrix uses the official implementation rubric only. It excludes defense po
 |---|---:|---:|---:|---|---|---|
 | Reproducible Compose, health checks, persistent data | 6 | 6 | VERIFIED | docker-compose.yml, migrations, named volumes | API_PORT=3300 docker compose --env-file .env.compose.local up -d --build --wait; final smoke passed | phase5 and phase6.2 evidence |
 | Multi-stage, shell-free, non-root, build secrets, vulnerability gate | 3 | 3 | VERIFIED | docker/Dockerfile, scripts/scan-image.sh | image user 65532, shell null, BuildKit secret; Trivy 9 findings, max 10, pass | phase6.2 verification |
-| Deployment as code, rolling update under load, probes, SIGTERM | 3 | 1 | PARTIAL | infra, k8s, .github/workflows/pr.yml, demo/demo-rollout.sh | New gate requires 5,000 real responses, `failed=0`, and a changed deployment revision; existing source has separate probes and SIGTERM handlers, but the post-change CI transcript is not yet available | Re-run the PR workflow; `pipeline-evidence` and job summary are the evidence |
-| External deployment evidence | 3 | 0 | BLOCKED | `.github/workflows/pr.yml`, Pulumi/kind deployment | New evidence contract fails unless built and deployed digests are equal; the previous run predates this gate, so no points are awarded until a post-change successful run is available | Re-run the PR workflow; [previous run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162) is historical only |
-| **11.6 total** | **15** | **10** | **PARTIAL** | | | |
+| Deployment as code, rolling update under load, probes, SIGTERM | 3 | 2 | PARTIAL | infra/index.ts, .github/workflows/pr.yml, demo/demo-rollout.sh | [CI artifacts](ci-run-45640058955): rolling-update=true; 26991 requests; 26991 OK; failed=0; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; separate `/readyz` and `/healthz`; SIGTERM readiness transition is not captured | `npm run demo:rollout` with `MIN_REQUESTS=5000`; evidence/ci-run-45640058955/rollout.txt and deployment.json |
+| External deployment evidence | 3 | 3 | VERIFIED | .github/workflows/pr.yml, infra/index.ts, Pulumi/kind deployment | `built-digest=deployed-digest=sha256:039e7f246ee67bb46edcc2df52a0aae7631883d6f2efeaff9293b65eadc73844`; `digest-equal=true`; one build invocation | [CI run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955); evidence/ci-run-45640058955/evidence.txt |
+| **11.6 total** | **15** | **14** | **PARTIAL** | | | SIGTERM readiness transition remains unrecorded |
 
 ## 11.7 Observability, tests and pipeline — 15 points
 
@@ -72,7 +72,7 @@ This matrix uses the official implementation rubric only. It excludes defense po
 | Correlated logs, context isolation, redaction | 3 | 2 | PARTIAL | request context middleware, logger, observability service | Source redacts authorization and propagates context; complete final demo transcript not stored | src/observability and prior homework scripts |
 | RED metrics, labels, OTEL propagation, Grafana | 2 | 1 | PARTIAL | metrics interceptor/registry, telemetry, observability Compose | Source/dashboard exist; complete final Grafana/trace transcript not stored | src/observability and observability |
 | Integration, E2E, independent unit tests | 4 | 4 | VERIFIED | test/integration, test/e2e, test/unit | Two integration runs: 3 suites/7 tests each; E2E 1 suite/9 tests; unit 2 declared tests exit 0 | phase6.2 verification |
-| Repository pipeline, build/checks, invalid-input gates | 4 | 4 | VERIFIED | .github/workflows, contract gate, fixtures | Build/typecheck/lint/architecture/check:env passed; valid contract passes; invalid fixtures fail | workflows and fixtures/hw32/contract |
+| Repository pipeline, build/checks, invalid-input gates | 4 | 4 | VERIFIED | .github/workflows, contract gate, fixtures | Build/typecheck/lint/architecture/check:env passed; valid contract passes; invalid fixtures fail; final CI run 45640058955 records one build, OIDC verification, scan exit 0, and successful deployment evidence | workflows, fixtures/hw32/contract, evidence/ci-run-45640058955 |
 | **11.7 total** | **15** | **12** | **PARTIAL** | | | |
 
 ## Total
@@ -84,8 +84,8 @@ This matrix uses the official implementation rubric only. It excludes defense po
 | 11.3 Data storage | 10 | 8 |
 | 11.4 Security and validation | 10 | 10 |
 | 11.5 Asynchronous processing | 10 | 8 |
-| 11.6 Docker and deployment | 15 | 10 |
+| 11.6 Docker and deployment | 15 | 14 |
 | 11.7 Observability, tests and pipeline | 15 | 12 |
-| **TOTAL** | **95** | **82** |
+| **TOTAL** | **95** | **86** |
 
-This is a defensible repository-evidence estimate, not a guaranteed grade. It deliberately does not force the result to 92. The rollout and digest gates are now implemented, but no post-change CI result exists yet. The main missing points are complete isolated transcripts for storage/cache and RabbitMQ failure-mode demos, runtime SIGTERM/readiness evidence, and a successful post-change CI artifact.
+This is a defensible repository-evidence estimate, not a guaranteed grade. It deliberately does not force the result to 92. The final CI artifact recovers four points in 11.6: one additional point for verified rolling deployment/probes/zero-failure traffic evidence and three points for accepted external deployment evidence. The SIGTERM readiness transition remains unrecorded. Remaining losses include the two 11.3 storage points, RabbitMQ failure-mode evidence, and observability runtime evidence.

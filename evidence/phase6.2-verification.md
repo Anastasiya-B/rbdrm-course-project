@@ -34,8 +34,8 @@ Captured from the course-project repository. Secret values, tokens, and personal
 | Image build | npm run image:build | exit 0; final multi-stage image built | VERIFIED |
 | Image metadata | docker image inspect rbdrm-marketplace:hw28 | UID 65532; shell null; node entrypoint; no secret env names | VERIFIED |
 | Vulnerability gate | npm run scan | found=9; severity HIGH,CRITICAL; max-allowed=10; gate=pass | VERIFIED |
-| Deployment evidence | inspect evidence/base*, evidence/demos.txt, workflows | previous artifacts present; no accepted external run URL or six-zero teardown transcript recorded | PARTIAL |
-| Final CI/CD run | [GitHub Actions run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162) | All three jobs completed successfully; this run used the old 2,000-request invocation | VERIFIED for prior workflow completion; not final evidence for the new 5,000-request gate |
+| Deployment evidence | inspect evidence/base*, evidence/demos.txt, workflows | previous AWS evidence is not a six-zero teardown; final kind deployment is verified by run 45640058955 | VERIFIED via accepted CI deployment evidence |
+| Final CI/CD deployment | [GitHub Actions run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955) and [local artifacts](ci-run-45640058955) | built/deployed digest equal; build-invocations=1; rolling-update=true; requests=26991; ok=26991; failed=0; rollout-seconds=43; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; OIDC signature=1; secret-in-manifest=0; scan exit=0 | VERIFIED |
 
 ## Runtime and troubleshooting notes
 
@@ -43,7 +43,9 @@ Docker Desktop/Testcontainers is required for integration/E2E infrastructure. Th
 
 No development database or persistent volume was reset. Restore used a dedicated temporary restore container and volume. Cleanup-heavy demos were not forced against shared state.
 
-The previous CI run was inspected through the public GitHub Actions run and job metadata. It passed the OpenAPI gate, built the image once, pulled the image by digest, deployed it to an ephemeral kind cluster, ran the rollout step, uploaded pipeline evidence, and destroyed the cluster. The current workflow strengthens this verification: `MIN_REQUESTS=5000`, `failed=0`, a changed deployment revision, and exact built/deployed digest equality are now failing gates. The next successful run is required to record those values in the job summary and artifact.
+The final CI artifacts record the post-change gates. `rollout-http-codes.txt` contains exactly 26,991 lines, all `200`. `rollout.txt` records a Pulumi update from the previous revision to `hw28-1795618996`, followed by `requests=26991`, `ok=26991`, `failed=0`, and `rollout-seconds=43`. `deployment.json` records 3 replicas, 3 ready replicas, 3 updated replicas, separate `/readyz` and `/healthz` probes, `maxUnavailable=0`, `maxSurge=1`, and a 15-second termination grace period. `evidence.txt` records equal built/deployed digests, one build invocation, OIDC signature verification, zero secret values in the manifest, and scan exit 0. Rollout traffic targeted the Kubernetes Service health endpoint, as shown in `rollout.txt`.
+
+The artifact secret review found only environment-variable names, Kubernetes Secret references, and Pulumi's literal `[secret]` redaction marker. No private key, password, token, or secret value is present in the retained files.
 
 ## Evidence links
 
@@ -51,4 +53,5 @@ The previous CI run was inspected through the public GitHub Actions run and job 
 - Official grading matrix: evidence/phase6.2-grading-matrix.md
 - Compose smoke invariants: evidence/phase5-compose-verification.json
 - Previous deployment artifacts: evidence/base.txt, evidence/base-state.json, evidence/demos.txt
-- Final CI/CD deployment run and retained artifact: [run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162)
+- Final CI/CD deployment run: [run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955)
+- Final retained CI artifacts: [evidence/ci-run-45640058955](ci-run-45640058955)

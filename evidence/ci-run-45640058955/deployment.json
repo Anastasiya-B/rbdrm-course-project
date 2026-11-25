@@ -1,0 +1,240 @@
+{
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+        "annotations": {
+            "deployment.kubernetes.io/revision": "2"
+        },
+        "creationTimestamp": "2026-11-25T15:02:58Z",
+        "generation": 2,
+        "name": "marketplace-deployment",
+        "namespace": "marketplace-hw28",
+        "resourceVersion": "853",
+        "uid": "774b3f96-a407-4ab6-af10-074035f74219"
+    },
+    "spec": {
+        "progressDeadlineSeconds": 600,
+        "replicas": 3,
+        "revisionHistoryLimit": 10,
+        "selector": {
+            "matchLabels": {
+                "app": "marketplace"
+            }
+        },
+        "strategy": {
+            "rollingUpdate": {
+                "maxSurge": 1,
+                "maxUnavailable": 0
+            },
+            "type": "RollingUpdate"
+        },
+        "template": {
+            "metadata": {
+                "annotations": {
+                    "revision": "hw28-1795618996"
+                },
+                "labels": {
+                    "app": "marketplace"
+                }
+            },
+            "spec": {
+                "containers": [
+                    {
+                        "env": [
+                            {
+                                "name": "PORT",
+                                "value": "3000"
+                            },
+                            {
+                                "name": "DB_HOST",
+                                "value": "postgres.invalid"
+                            },
+                            {
+                                "name": "DB_PORT",
+                                "value": "5432"
+                            },
+                            {
+                                "name": "DB_USER",
+                                "value": "marketplace"
+                            },
+                            {
+                                "name": "DB_NAME",
+                                "value": "marketplace"
+                            },
+                            {
+                                "name": "DB_PASSWORD",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "key": "DB_PASSWORD",
+                                        "name": "marketplace-runtime-secret"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "DB_PASSWORD_FILE",
+                                "value": "/run/secrets/db_password"
+                            },
+                            {
+                                "name": "DB_URL",
+                                "value": "postgresql://marketplace@postgres.invalid:5432/marketplace"
+                            },
+                            {
+                                "name": "DATABASE_URL",
+                                "value": "postgresql://marketplace@postgres.invalid:5432/marketplace"
+                            },
+                            {
+                                "name": "JWT_KID",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "key": "JWT_KID",
+                                        "name": "marketplace-runtime-secret"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "JWT_PRIVATE_KEY",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "key": "JWT_PRIVATE_KEY",
+                                        "name": "marketplace-runtime-secret"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "JWT_PUBLIC_KEY",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "key": "JWT_PUBLIC_KEY",
+                                        "name": "marketplace-runtime-secret"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "REFRESH_TOKEN_PEPPER",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "key": "REFRESH_TOKEN_PEPPER",
+                                        "name": "marketplace-runtime-secret"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "REV",
+                                "value": "hw28-1795618996"
+                            }
+                        ],
+                        "image": "ghcr.io/anastasiya-b/rbdrm-course-project:c5aa8bf7f8c240077c5930fa14a685317aa93e26@sha256:039e7f246ee67bb46edcc2df52a0aae7631883d6f2efeaff9293b65eadc73844",
+                        "imagePullPolicy": "IfNotPresent",
+                        "livenessProbe": {
+                            "failureThreshold": 3,
+                            "httpGet": {
+                                "path": "/healthz",
+                                "port": "http",
+                                "scheme": "HTTP"
+                            },
+                            "periodSeconds": 5,
+                            "successThreshold": 1,
+                            "timeoutSeconds": 1
+                        },
+                        "name": "marketplace",
+                        "ports": [
+                            {
+                                "containerPort": 3000,
+                                "name": "http",
+                                "protocol": "TCP"
+                            }
+                        ],
+                        "readinessProbe": {
+                            "failureThreshold": 1,
+                            "httpGet": {
+                                "path": "/readyz",
+                                "port": "http",
+                                "scheme": "HTTP"
+                            },
+                            "periodSeconds": 1,
+                            "successThreshold": 1,
+                            "timeoutSeconds": 1
+                        },
+                        "resources": {
+                            "limits": {
+                                "cpu": "500m",
+                                "memory": "256Mi"
+                            },
+                            "requests": {
+                                "cpu": "50m",
+                                "memory": "96Mi"
+                            }
+                        },
+                        "securityContext": {
+                            "allowPrivilegeEscalation": false,
+                            "capabilities": {
+                                "drop": [
+                                    "ALL"
+                                ]
+                            },
+                            "readOnlyRootFilesystem": true
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File",
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/run/secrets",
+                                "name": "runtime-secret",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {
+                    "runAsGroup": 65532,
+                    "runAsNonRoot": true,
+                    "runAsUser": 65532
+                },
+                "terminationGracePeriodSeconds": 15,
+                "volumes": [
+                    {
+                        "name": "runtime-secret",
+                        "secret": {
+                            "defaultMode": 420,
+                            "items": [
+                                {
+                                    "key": "DB_PASSWORD",
+                                    "path": "db_password"
+                                }
+                            ],
+                            "secretName": "marketplace-runtime-secret"
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    "status": {
+        "availableReplicas": 3,
+        "conditions": [
+            {
+                "lastTransitionTime": "2026-11-25T15:03:06Z",
+                "lastUpdateTime": "2026-11-25T15:03:06Z",
+                "message": "Deployment has minimum availability.",
+                "reason": "MinimumReplicasAvailable",
+                "status": "True",
+                "type": "Available"
+            },
+            {
+                "lastTransitionTime": "2026-11-25T15:02:58Z",
+                "lastUpdateTime": "2026-11-25T15:03:59Z",
+                "message": "ReplicaSet \"marketplace-deployment-5f98659c5c\" has successfully progressed.",
+                "reason": "NewReplicaSetAvailable",
+                "status": "True",
+                "type": "Progressing"
+            }
+        ],
+        "observedGeneration": 2,
+        "readyReplicas": 3,
+        "replicas": 3,
+        "updatedReplicas": 3
+    }
+}
