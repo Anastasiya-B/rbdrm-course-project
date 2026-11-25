@@ -19,6 +19,9 @@ describe('Orders consumer contract', () => {
       .withRequest({
         method: 'GET',
         path: '/orders/1',
+        headers: {
+          Authorization: 'Bearer contract-token',
+        },
       })
       .willRespondWith({
         status: 200,
@@ -39,7 +42,9 @@ describe('Orders consumer contract', () => {
       });
 
     await provider.executeTest(async mockServer => {
-      const response = await fetch(`${mockServer.url}/orders/1`);
+      const response = await fetch(`${mockServer.url}/orders/1`, {
+        headers: { Authorization: 'Bearer contract-token' },
+      });
 
       expect(response.status).toBe(200);
 

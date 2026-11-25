@@ -64,6 +64,11 @@ export interface OrderResponse {
   status: OrderStatus;
 }
 
+export interface OrderPage {
+  items: OrderResponse[];
+  next_cursor: string | null;
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -346,6 +351,30 @@ export class OrdersService {
       })),
       total_cents: Number(order.total_amount),
       status: order.status,
+    };
+  }
+
+  async listForUser(userId: number, limit: number, afterId?: number): Promise<OrderPage> {
+    const result = await this.databaseService.query<OrderRow>(
+      `
+        SELECT id, status, total_amount
+        FROM orders
+        WHERE user_id = $1
+          AND ($2::bigint IS NULL OR id > $2)
+        ORDER BY id
+        LIMIT $3
+      `,
+      [userId, afterId ?? null, limit + 1],
+    );
+    const hasNext = result.rows.length > limit;
+    const rows = hasNext ? result.rows.slice(0, limit) : result.rows;
+    const items: OrderResponse[] = [];
+    for (const row of rows) {
+      items.push(await this.findById(Number(row.id)));
+    }
+    return {
+      items,
+      next_cursor: hasNext ? Buffer.from(JSON.stringify({ id: Number(rows[rows.length - 1].id) })).toString('base64url') : null,
     };
   }
 

@@ -11,6 +11,8 @@ import {
 import type { Request } from 'express';
 
 import { PaymentService } from './payment.service';
+import { ZodValidationPipe } from '../validation/zod.pipe';
+import { webhookSchema } from '../validation/schemas';
 
 interface PaymentWebhookRequest extends Request {
   rawBody?: Buffer;
@@ -31,7 +33,7 @@ export class PaymentController {
   async webhook(
     @Headers('x-payment-signature') signature: string | undefined,
     @Req() request: PaymentWebhookRequest,
-    @Body() body: PaymentWebhookBody,
+    @Body(new ZodValidationPipe(webhookSchema)) body: PaymentWebhookBody,
   ) {
     const rawBody = request.rawBody?.toString('utf8');
     if (!rawBody || !signature || !this.paymentService.verifyWebhookSignature(rawBody, signature)) {

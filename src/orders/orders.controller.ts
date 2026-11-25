@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -20,6 +21,10 @@ import { OrderEventsService } from './order-events.service';
 import { OrdersService } from './orders.service';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { ZodValidationPipe } from '../validation/zod.pipe';
+import { createOrderSchema, paginationSchema, updateOrderStatusSchema } from '../validation/schemas';
+import { z } from 'zod';
+import { RateLimitGuard } from '../redis/rate-limit.guard';
 
 interface CreateOrderRequest {
   items: Array<{
@@ -32,6 +37,19 @@ interface UpdateOrderStatusRequest {
   status: string;
 }
 
+type Pagination = z.infer<typeof paginationSchema>;
+
+function decodeCursor(cursor: string | undefined): number | undefined {
+  if (!cursor) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id?: number };
+    if (!Number.isInteger(value.id) || Number(value.id) <= 0) throw new Error();
+    return Number(value.id);
+  } catch {
+    throw new BadRequestException('Invalid cursor');
+  }
+}
+
 @Controller('orders')
 export class OrdersController {
   constructor(
@@ -40,11 +58,11 @@ export class OrdersController {
   ) {}
 
   @Post()
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, RateLimitGuard)
   createOrder(
     @Headers('idempotency-key')
     idempotencyKey: string | undefined,
-    @Body()
+    @Body(new ZodValidationPipe(createOrderSchema))
     body: CreateOrderRequest,
     @Req()
     request: AuthenticatedRequest,
@@ -66,7 +84,7 @@ export class OrdersController {
   updateOrderStatus(
     @Param('id', ParseIntPipe)
     id: number,
-    @Body()
+    @Body(new ZodValidationPipe(updateOrderStatusSchema))
     body: UpdateOrderStatusRequest,
     @Req()
     request: AuthenticatedRequest,
@@ -83,6 +101,7 @@ export class OrdersController {
     );
   }
 
+  @UseGuards(AuthGuard)
   @Get(':id/events')
   async streamOrderEvents(
     @Param('id', ParseIntPipe)
@@ -94,7 +113,9 @@ export class OrdersController {
     @Res()
     response: Response,
   ): Promise<void> {
-    await this.ordersService.findById(id);
+    if (!request.user || !(await this.ordersService.belongsToUser(id, Number(request.user.sub)))) {
+      throw new ForbiddenException('Order belongs to another user');
+    }
 
     const lastEventId = this.parseLastEventId(lastEventIdHeader);
 
@@ -127,6 +148,20 @@ export class OrdersController {
       subscription.unsubscribe();
       response.end();
     });
+  }
+
+  @UseGuards(AuthGuard)
+  @Get()
+  async listOrders(
+    @Query(new ZodValidationPipe(paginationSchema)) query: Pagination,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    if (!request.user) throw new ForbiddenException('Access denied');
+    return this.ordersService.listForUser(
+      Number(request.user.sub),
+      query.limit,
+      decodeCursor(query.cursor),
+    );
   }
 
   @UseGuards(AuthGuard)

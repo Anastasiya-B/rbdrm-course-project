@@ -12,6 +12,34 @@ servers:
 
 paths:
   /products:
+    post:
+      operationId: createProduct
+      summary: Create product
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, price]
+              properties:
+                name: { type: string, minLength: 1 }
+                description: { type: string }
+                price: { type: integer, minimum: 1 }
+                stockQuantity: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: Product created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     get:
       operationId: getProducts
       summary: Get products list
@@ -75,6 +103,8 @@ paths:
       operationId: getOrders
       summary: Get orders list
       description: Returns a paginated list of marketplace orders.
+      security:
+        - bearerAuth: []
       parameters:
         - in: query
           name: limit
@@ -321,6 +351,7 @@ components:
           example: 520000
         status:
           type: string
+          enum: [created, paid, shipped, completed, cancelled]
           example: created
 
     ProductListResponse:

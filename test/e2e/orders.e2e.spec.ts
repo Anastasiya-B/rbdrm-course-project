@@ -147,6 +147,54 @@ describe('Orders E2E', () => {
       .expect(403);
   });
 
+  it('supports bounded cursor pagination and problem+json validation errors', async () => {
+    await request(app.getHttpServer())
+      .get('/products?limit=1')
+      .expect(200)
+      .expect(response => {
+        expect(response.body.items).toHaveLength(1);
+        expect(response.body.next_cursor).toEqual(expect.any(String));
+      });
+
+    const paginationOrder = await request(app.getHttpServer())
+      .post('/orders')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .set('Idempotency-Key', 'pagination-order')
+      .send({ items: [{ product_id: Number(productId), quantity: 1 }] })
+      .expect(201);
+    await request(app.getHttpServer())
+      .patch(`/orders/${paginationOrder.body.id}/status`)
+      .set('Authorization', `Bearer ${adminAccessToken}`)
+      .send({ status: 'cancelled' })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/orders?limit=1')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200)
+      .expect(response => {
+        expect(response.body.items).toHaveLength(1);
+        expect(response.body.next_cursor).toEqual(expect.any(String));
+      });
+
+    await request(app.getHttpServer())
+      .post('/orders')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .set('Idempotency-Key', 'problem-details-order')
+      .send({ items: [{ product_id: Number(productId), quantity: 0 }] })
+      .expect(400)
+      .expect(response => {
+        expect(response.headers['content-type']).toContain('application/problem+json');
+        expect(response.body).toMatchObject({
+          type: expect.any(String),
+          title: expect.any(String),
+          status: 400,
+          detail: expect.any(String),
+          instance: '/orders',
+        });
+      });
+  });
+
   it('publishes the real outbox event and marks the order paid', async () => {
     const { startOrderPlacedConsumer } = await import(
       '../../src/rabbitmq/order-placed.consumer'
@@ -212,6 +260,10 @@ describe('Orders E2E', () => {
       .expect(401);
 
     await request(app.getHttpServer())
+      .get('/orders/1/events')
+      .expect(401);
+
+    await request(app.getHttpServer())
       .post('/payments/webhook')
       .set('Content-Type', 'application/json')
       .set('x-payment-signature', signature)
@@ -270,7 +322,7 @@ describe('Orders E2E', () => {
       .patch('/orders/1/status')
       .set('Authorization', `Bearer ${adminAccessToken}`)
       .send({ status: 'paid' })
-      .expect(409);
+      .expect(400);
   });
 
   it('replays idempotent checkout without reserving inventory twice', async () => {

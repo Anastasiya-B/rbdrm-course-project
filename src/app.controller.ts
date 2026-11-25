@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Post,
+  Query,
   Req,
   ServiceUnavailableException,
   UseGuards,
@@ -14,6 +15,9 @@ import { Roles } from './auth/roles.decorator';
 import { RolesGuard } from './auth/roles.guard';
 import { DatabaseService } from './database.service';
 import { isReady } from './lifecycle';
+import { ZodValidationPipe } from './validation/zod.pipe';
+import { createProductSchema, paginationSchema } from './validation/schemas';
+import { z } from 'zod';
 
 const startedAt = Date.now();
 
@@ -32,6 +36,22 @@ interface ProductRow {
   price: number;
   stock_quantity: number;
   is_active: boolean;
+}
+
+type Pagination = z.infer<typeof paginationSchema>;
+
+function decodeCursor(cursor: string | undefined): number | undefined {
+  if (!cursor) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { id?: number };
+    return Number.isInteger(value.id) && Number(value.id) > 0 ? Number(value.id) : undefined;
+  } catch {
+    throw new BadRequestException('Invalid cursor');
+  }
+}
+
+function encodeCursor(id: number): string {
+  return Buffer.from(JSON.stringify({ id })).toString('base64url');
 }
 
 @Controller()
@@ -101,8 +121,8 @@ export class AppController {
   async createProduct(
     @Req()
     request: AuthenticatedRequest,
-    @Body()
-    body: CreateProductRequest,
+    @Body(new ZodValidationPipe(createProductSchema))
+    validatedBody: CreateProductRequest,
   ) {
     const user = request.user;
 
@@ -110,21 +130,8 @@ export class AppController {
       throw new BadRequestException('Authenticated user is required');
     }
 
-    if (typeof body.name !== 'string' || !body.name.trim()) {
-      throw new BadRequestException('Product name is required');
-    }
-
-    if (!Number.isInteger(body.price) || body.price <= 0) {
-      throw new BadRequestException('Product price must be a positive integer');
-    }
-
-    const stockQuantity = body.stockQuantity ?? 0;
-
-    if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
-      throw new BadRequestException(
-        'Stock quantity must be a non-negative integer',
-      );
-    }
+    const productBody = validatedBody;
+    const stockQuantity = productBody.stockQuantity ?? 0;
 
     const result = await this.databaseService.query<ProductRow>(
       `
@@ -155,9 +162,9 @@ export class AppController {
         `,
       [
         Number(user.sub),
-        body.name.trim(),
-        body.description ?? null,
-        body.price,
+        productBody.name.trim(),
+        productBody.description ?? null,
+        productBody.price,
         stockQuantity,
       ],
     );
@@ -176,6 +183,34 @@ export class AppController {
       price: Number(product.price),
       stock_quantity: product.stock_quantity,
       is_active: product.is_active,
+    };
+  }
+
+  @Get('products')
+  async listProducts(
+    @Query(new ZodValidationPipe(paginationSchema)) query: Pagination,
+  ) {
+    const afterId = decodeCursor(query.cursor);
+    const result = await this.databaseService.query<ProductRow>(
+      `
+        SELECT id, owner_id, name, description, price, stock_quantity, is_active
+        FROM products
+        WHERE is_active = TRUE
+          AND ($1::bigint IS NULL OR id > $1)
+        ORDER BY id
+        LIMIT $2
+      `,
+      [afterId ?? null, query.limit + 1],
+    );
+    const hasNext = result.rows.length > query.limit;
+    const rows = hasNext ? result.rows.slice(0, query.limit) : result.rows;
+    return {
+      items: rows.map(product => ({
+        id: Number(product.id),
+        name: product.name,
+        price_cents: Number(product.price),
+      })),
+      next_cursor: hasNext ? encodeCursor(Number(rows[rows.length - 1].id)) : null,
     };
   }
 }

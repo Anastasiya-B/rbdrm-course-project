@@ -10,6 +10,7 @@ import { getAuthConfig } from './auth/auth.config';
 import type { Env } from './config/env.schema';
 import { markNotReady, markReady, sleep } from './lifecycle';
 import { shutdownTelemetry } from './observability/telemetry';
+import { ProblemDetailsFilter } from './observability/problem-details.filter';
 
 const STARTUP_DELAY_MS = 4_000;
 
@@ -19,6 +20,7 @@ async function bootstrap() {
   getAuthConfig();
 
   const app = await NestFactory.create(AppModule, { rawBody: true });
+  app.useGlobalFilters(new ProblemDetailsFilter());
 
   const configService = app.get<ConfigService<Env, true>>(ConfigService);
 
