@@ -387,7 +387,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          MIN_REQUESTS=2000 \
+          MIN_REQUESTS=5000 \
           IMAGE_NAME="$DEPLOY_IMAGE" \
           EVIDENCE_FILE=evidence/hw32/rollout-http-codes.txt \
             npm run demo:rollout \
@@ -413,6 +413,31 @@ jobs:
           EVIDENCE_IMAGE_REF: ${{ needs.build.outputs.image-ref }}
           EVIDENCE_BUILT_DIGEST: ${{ needs.build.outputs.digest }}
         run: node scripts/hw32/collect-evidence.mjs
+
+      - name: Verify deployment evidence and publish summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f evidence/hw32/evidence.txt
+
+          cat evidence/hw32/evidence.txt >> "$GITHUB_STEP_SUMMARY"
+
+          BUILT_DIGEST="$(awk -F= '$1 == "built-digest" {print $2}' evidence/hw32/evidence.txt)"
+          DEPLOYED_DIGEST="$(awk -F= '$1 == "deployed-digest" {print $2}' evidence/hw32/evidence.txt)"
+          DIGEST_EQUAL="$(awk -F= '$1 == "digest-equal" {print $2}' evidence/hw32/evidence.txt)"
+          REQUESTS="$(awk -F= '$1 == "rollout-requests" {print $2}' evidence/hw32/evidence.txt)"
+          FAILED="$(awk -F= '$1 == "rollout-failed" {print $2}' evidence/hw32/evidence.txt)"
+          ROLLING_UPDATE="$(awk -F= '$1 == "rolling-update" {print $2}' evidence/hw32/evidence.txt)"
+
+          test -n "$BUILT_DIGEST"
+          test -n "$DEPLOYED_DIGEST"
+          test "$DIGEST_EQUAL" = true
+          test "$BUILT_DIGEST" = "$DEPLOYED_DIGEST"
+          test "$REQUESTS" -ge 5000
+          test "$FAILED" -eq 0
+          test "$ROLLING_UPDATE" = true
 
       - name: Enforce image scan gate
         if: always()
@@ -441,6 +466,7 @@ jobs:
             evidence/hw32/deployment.json
             evidence/hw32/plan.json
             evidence/hw32/rollout.txt
+            evidence/hw32/rollout-http-codes.txt
             evidence/hw32/build.log
           if-no-files-found: warn
           retention-days: 14

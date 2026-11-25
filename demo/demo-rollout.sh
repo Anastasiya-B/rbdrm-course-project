@@ -82,6 +82,13 @@ fi
 
 REVISION="hw28-$(date +%s)"
 
+BEFORE_REVISION="$(
+  kubectl \
+    -n "$NAMESPACE" \
+    get deployment "$DEPLOYMENT" \
+    -o jsonpath='{.spec.template.metadata.annotations.revision}'
+)"
+
 echo "Starting rollout revision: $REVISION"
 echo "Starting in-cluster load against: $SERVICE_URL"
 
@@ -234,6 +241,18 @@ kubectl \
   "deployment/$DEPLOYMENT" \
   --timeout=180s
 
+AFTER_REVISION="$(
+  kubectl \
+    -n "$NAMESPACE" \
+    get deployment "$DEPLOYMENT" \
+    -o jsonpath='{.spec.template.metadata.annotations.revision}'
+)"
+
+if [ -z "$AFTER_REVISION" ] || [ "$BEFORE_REVISION" = "$AFTER_REVISION" ]; then
+  echo "Deployment revision did not change during rollout" >&2
+  exit 1
+fi
+
 echo "deployment \"$DEPLOYMENT\" successfully rolled out"
 
 echo "Waiting for load generator to finish"
@@ -305,6 +324,9 @@ FINISHED_AT="$(date +%s)"
 ROLLOUT_SECONDS="$((FINISHED_AT - STARTED_AT))"
 
 echo "profile=correct"
+echo "before-revision=$BEFORE_REVISION"
+echo "after-revision=$AFTER_REVISION"
+echo "rolling-update=true"
 echo "requests=$REQUESTS"
 echo "ok=$OK"
 echo "failed=$FAILED"

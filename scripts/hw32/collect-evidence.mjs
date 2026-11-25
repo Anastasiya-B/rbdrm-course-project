@@ -113,6 +113,9 @@ async function main() {
 
   const deployedDigest = extractDigest(deploymentRaw);
 
+  const digestEqual =
+    Boolean(deployedDigest) && deployedDigest === builtDigest;
+
   const buildLog = await readOptional('evidence/hw32/build.log');
 
   const buildInvocations = buildLog.split(/\r?\n/).filter(Boolean).length;
@@ -146,6 +149,7 @@ async function main() {
     `image-ref=${imageRef}`,
     `built-digest=${builtDigest}`,
     `deployed-digest=${deployedDigest}`,
+    `digest-equal=${digestEqual}`,
     `build-invocations=${buildInvocations}`,
 
     'creds-source=oidc',
@@ -159,12 +163,36 @@ async function main() {
     `rollout-ok=${rollout.get('ok') ?? '0'}`,
     `rollout-failed=${rollout.get('failed') ?? '0'}`,
     `rollout-seconds=${rollout.get('rollout-seconds') ?? '0'}`,
+    `before-revision=${rollout.get('before-revision') ?? ''}`,
+    `after-revision=${rollout.get('after-revision') ?? ''}`,
+    `rolling-update=${rollout.get('rolling-update') ?? 'false'}`,
 
     `secret-in-manifest=${secretInManifest}`,
     `gate-scan-exit=${scanExit}`,
   ];
 
   await writeFile('evidence/hw32/evidence.txt', `${lines.join('\n')}\n`);
+
+  if (!digestEqual) {
+    throw new Error(
+      `deployment digest mismatch: built=${builtDigest} deployed=${deployedDigest || 'missing'}`,
+    );
+  }
+
+  if (rollout.get('rolling-update') !== 'true') {
+    throw new Error('rolling update evidence is missing');
+  }
+
+  const requests = Number(rollout.get('requests') ?? '0');
+  const failed = Number(rollout.get('failed') ?? '-1');
+
+  if (!Number.isInteger(requests) || requests < 5000) {
+    throw new Error(`rollout request count is below 5000: ${requests}`);
+  }
+
+  if (failed !== 0) {
+    throw new Error(`rollout has failed requests: ${failed}`);
+  }
 }
 
 main().catch(error => {

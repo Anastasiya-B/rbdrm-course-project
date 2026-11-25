@@ -229,7 +229,7 @@ The production image is multi-stage, shell-free, distroless, non-root UID 65532,
 
 The final Compose smoke result was health 200, ready 200, order paid, independent retrieval successful, and idempotent replay status 201. The final realtime result was ownerJoin=true, foreignJoinRejected=true, invalidJwtRejected=true, ownerReceived=true, foreignReceived=0, and sseReplayObserved=true.
 
-Deployment code is under infra, k8s, scripts, and .github/workflows. Existing evidence distinguishes previous HW31/HW32 work from the current project verification. No verified public URL, accepted six-zero HW31 teardown transcript, or current CI run URL is recorded in this repository; none is invented here. The current Pull Request checks must be inspected in GitHub.
+Deployment code is under infra, k8s, scripts, and .github/workflows. The final Pull Request pipeline completed successfully in [GitHub Actions run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162): Quality gates, Build once, and Preview/OIDC/deploy/rollout all passed. The rollout gate now requires at least 5,000 real HTTP responses, zero failed responses, and a changed deployment revision. The evidence contract records built and deployed digests and fails the job when they differ; the job summary and retained `pipeline-evidence` artifact contain the sanitized numerical results. The current run predates this stricter gate; rerun the PR workflow to create final evidence.
 
 ## Reviewer runbook
 
@@ -253,6 +253,6 @@ The matrix uses official blocks 11.1 Architecture, 11.2 Business Flow and API, 1
 - The original HW0 template remains unavailable; the domain table is repository-derived.
 - Cache/file demo evidence is incomplete in the current sanitized evidence set.
 - RabbitMQ crash/retry/DLQ failure-mode transcripts are incomplete.
-- SIGTERM readiness, 5000-request rollout, and accepted external deployment evidence are not recorded.
+- Runtime SIGTERM readiness evidence and the post-change CI artifact are still required. The existing deployment code has separate probes, PDB/HPA configuration, and SIGTERM handlers; the next successful workflow run must be used for the final numerical grading evidence.
 - The Trivy gate passes with 9 findings; the findings remain a documented risk.
 - No final grade is guaranteed.

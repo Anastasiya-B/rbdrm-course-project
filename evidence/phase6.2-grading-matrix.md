@@ -60,8 +60,8 @@ This matrix uses the official implementation rubric only. It excludes defense po
 |---|---:|---:|---:|---|---|---|
 | Reproducible Compose, health checks, persistent data | 6 | 6 | VERIFIED | docker-compose.yml, migrations, named volumes | API_PORT=3300 docker compose --env-file .env.compose.local up -d --build --wait; final smoke passed | phase5 and phase6.2 evidence |
 | Multi-stage, shell-free, non-root, build secrets, vulnerability gate | 3 | 3 | VERIFIED | docker/Dockerfile, scripts/scan-image.sh | image user 65532, shell null, BuildKit secret; Trivy 9 findings, max 10, pass | phase6.2 verification |
-| Deployment as code, rolling update under load, probes, SIGTERM | 3 | 1 | PARTIAL | infra, k8s, .github/workflows/pr.yml, rollout scripts | Repository contains implementation; no current final 5000-request zero-failure transcript | Previous workflow files; no new deployment run |
-| External deployment evidence | 3 | 0 | MISSING | Previous AWS/kind artifacts do not include a verified accepted six-zero teardown or digest/run link | No public URL or verified run URL recorded | evidence/base* and evidence/demos.txt insufficient |
+| Deployment as code, rolling update under load, probes, SIGTERM | 3 | 1 | PARTIAL | infra, k8s, .github/workflows/pr.yml, demo/demo-rollout.sh | New gate requires 5,000 real responses, `failed=0`, and a changed deployment revision; existing source has separate probes and SIGTERM handlers, but the post-change CI transcript is not yet available | Re-run the PR workflow; `pipeline-evidence` and job summary are the evidence |
+| External deployment evidence | 3 | 0 | BLOCKED | `.github/workflows/pr.yml`, Pulumi/kind deployment | New evidence contract fails unless built and deployed digests are equal; the previous run predates this gate, so no points are awarded until a post-change successful run is available | Re-run the PR workflow; [previous run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162) is historical only |
 | **11.6 total** | **15** | **10** | **PARTIAL** | | | |
 
 ## 11.7 Observability, tests and pipeline — 15 points
@@ -88,4 +88,4 @@ This matrix uses the official implementation rubric only. It excludes defense po
 | 11.7 Observability, tests and pipeline | 15 | 12 |
 | **TOTAL** | **95** | **82** |
 
-This is a defensible repository-evidence estimate, not a guaranteed grade. It deliberately does not force the result to 92. The main missing points are complete isolated transcripts for storage/cache and RabbitMQ failure-mode demos, SIGTERM/rollout evidence, and accepted external deployment evidence.
+This is a defensible repository-evidence estimate, not a guaranteed grade. It deliberately does not force the result to 92. The rollout and digest gates are now implemented, but no post-change CI result exists yet. The main missing points are complete isolated transcripts for storage/cache and RabbitMQ failure-mode demos, runtime SIGTERM/readiness evidence, and a successful post-change CI artifact.

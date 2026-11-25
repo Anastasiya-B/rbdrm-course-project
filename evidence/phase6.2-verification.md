@@ -35,6 +35,7 @@ Captured from the course-project repository. Secret values, tokens, and personal
 | Image metadata | docker image inspect rbdrm-marketplace:hw28 | UID 65532; shell null; node entrypoint; no secret env names | VERIFIED |
 | Vulnerability gate | npm run scan | found=9; severity HIGH,CRITICAL; max-allowed=10; gate=pass | VERIFIED |
 | Deployment evidence | inspect evidence/base*, evidence/demos.txt, workflows | previous artifacts present; no accepted external run URL or six-zero teardown transcript recorded | PARTIAL |
+| Final CI/CD run | [GitHub Actions run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162) | All three jobs completed successfully; this run used the old 2,000-request invocation | VERIFIED for prior workflow completion; not final evidence for the new 5,000-request gate |
 
 ## Runtime and troubleshooting notes
 
@@ -42,9 +43,12 @@ Docker Desktop/Testcontainers is required for integration/E2E infrastructure. Th
 
 No development database or persistent volume was reset. Restore used a dedicated temporary restore container and volume. Cleanup-heavy demos were not forced against shared state.
 
+The previous CI run was inspected through the public GitHub Actions run and job metadata. It passed the OpenAPI gate, built the image once, pulled the image by digest, deployed it to an ephemeral kind cluster, ran the rollout step, uploaded pipeline evidence, and destroyed the cluster. The current workflow strengthens this verification: `MIN_REQUESTS=5000`, `failed=0`, a changed deployment revision, and exact built/deployed digest equality are now failing gates. The next successful run is required to record those values in the job summary and artifact.
+
 ## Evidence links
 
 - Restore procedure and actual RTO/RPO: RESTORE-DRILL.md
 - Official grading matrix: evidence/phase6.2-grading-matrix.md
 - Compose smoke invariants: evidence/phase5-compose-verification.json
 - Previous deployment artifacts: evidence/base.txt, evidence/base-state.json, evidence/demos.txt
+- Final CI/CD deployment run and retained artifact: [run 45631560162](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45631560162)
