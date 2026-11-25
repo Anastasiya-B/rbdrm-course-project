@@ -108,6 +108,8 @@ paths:
       operationId: createOrder
       summary: Create order
       description: Creates a new marketplace order.
+      security:
+        - bearerAuth: []
       parameters:
         - in: header
           name: Idempotency-Key
@@ -135,6 +137,12 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+        '409':
+          $ref: '#/components/responses/Conflict'
+
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
@@ -143,6 +151,8 @@ paths:
       operationId: getOrderById
       summary: Get order by id
       description: Returns a single marketplace order.
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -163,7 +173,52 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+    patch:
+      operationId: updateOrderStatus
+      summary: Cancel an order
+      description: Cancels an order before asynchronous payment processing begins.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [cancelled]
+      responses:
+        '200':
+          description: Order cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
   schemas:
     Product:
       type: object
@@ -315,6 +370,27 @@ components:
 
     NotFound:
       description: Resource not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Unauthorized:
+      description: Authentication is required.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Forbidden:
+      description: The authenticated user is not allowed to perform this operation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Conflict:
+      description: The request conflicts with current resource state.
       content:
         application/problem+json:
           schema:

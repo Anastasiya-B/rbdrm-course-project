@@ -1,12 +1,19 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import { DatabaseService } from '../database.service';
-import { ORDER_STATUSES, type OrderStatus } from '../entities/order.entity';
+import {
+  ORDER_STATUSES,
+  type OrderStatus,
+} from '../entities/order.entity';
+import type { UserRole } from '../auth/auth.tokens';
 import { insertOrderPlacedOutbox } from '../outbox/outbox.repository';
 import { toOrderPlacedEvent } from '../outbox/order-placed-event';
 import { OrderEventsService } from './order-events.service';
@@ -42,7 +49,10 @@ interface OrderItemRow {
 
 interface IdempotencyRow {
   order_id: string | null;
+  request_fingerprint: string | null;
 }
+
+const MAX_ITEM_QUANTITY = 1_000_000;
 
 export interface OrderResponse {
   id: number;
@@ -64,6 +74,7 @@ export class OrdersService {
   async create(
     input: CreateOrderInput,
     idempotencyKey: string,
+    userId: number,
   ): Promise<OrderResponse> {
     if (!Array.isArray(input.items) || input.items.length === 0) {
       throw new BadRequestException('Order must contain at least one item');
@@ -73,6 +84,38 @@ export class OrdersService {
       throw new BadRequestException('Idempotency-Key must not be empty');
     }
 
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new BadRequestException('Authenticated user is required');
+    }
+
+    const normalizedItems = input.items.map(item => ({
+      product_id: item.product_id,
+      quantity: item.quantity,
+    }));
+    const seenProductIds = new Set<number>();
+
+    for (const item of normalizedItems) {
+      if (
+        !Number.isInteger(item.product_id) ||
+        !Number.isInteger(item.quantity) ||
+        item.product_id <= 0 ||
+        item.quantity <= 0 ||
+        item.quantity > MAX_ITEM_QUANTITY
+      ) {
+        throw new BadRequestException('Invalid order item');
+      }
+
+      if (seenProductIds.has(item.product_id)) {
+        throw new BadRequestException('Duplicate product ids are not allowed');
+      }
+
+      seenProductIds.add(item.product_id);
+    }
+
+    const requestFingerprint = createHash('sha256')
+      .update(JSON.stringify({ items: normalizedItems }))
+      .digest('hex');
+
     const client = await this.databaseService.connect();
 
     try {
@@ -81,14 +124,18 @@ export class OrdersService {
       const reservationResult = await client.query(
         `
           INSERT INTO idempotency_keys (
-            idempotency_key
+            idempotency_key,
+            user_id,
+            operation,
+            request_fingerprint
           )
-          VALUES ($1)
-          ON CONFLICT (idempotency_key)
+          VALUES ($1, $2, 'create_order', $3)
+          ON CONFLICT (idempotency_key, user_id, operation)
+          WHERE user_id IS NOT NULL
           DO NOTHING
           RETURNING idempotency_key
         `,
-        [idempotencyKey],
+        [idempotencyKey, userId, requestFingerprint],
       );
 
       const reserved = reservationResult.rowCount === 1;
@@ -96,18 +143,26 @@ export class OrdersService {
       if (!reserved) {
         const existingResult = await client.query<IdempotencyRow>(
           `
-            SELECT order_id
+            SELECT order_id, request_fingerprint
             FROM idempotency_keys
             WHERE idempotency_key = $1
+              AND user_id = $2
+              AND operation = 'create_order'
             FOR UPDATE
           `,
-          [idempotencyKey],
+          [idempotencyKey, userId],
         );
 
         const existing = existingResult.rows[0];
 
         if (!existing?.order_id) {
           throw new Error('Idempotency key exists without completed order');
+        }
+
+        if (existing.request_fingerprint !== requestFingerprint) {
+          throw new ConflictException(
+            'Idempotency-Key was already used with a different request body',
+          );
         }
 
         const response = await this.findByIdWithClient(
@@ -124,9 +179,10 @@ export class OrdersService {
         `
           SELECT id
           FROM users
-          ORDER BY id
+          WHERE id = $1
           LIMIT 1
         `,
+        [userId],
       );
 
       const user = userResult.rows[0];
@@ -135,38 +191,52 @@ export class OrdersService {
         throw new BadRequestException('No buyer available');
       }
 
-      let totalAmount = 0;
+      let totalAmount = 0n;
 
-      for (const item of input.items) {
-        if (
-          !Number.isInteger(item.product_id) ||
-          !Number.isInteger(item.quantity) ||
-          item.product_id <= 0 ||
-          item.quantity <= 0
-        ) {
-          throw new BadRequestException('Invalid order item');
-        }
-
+      const reservedProducts = new Map<number, ProductRow>();
+      for (const item of [...normalizedItems].sort((a, b) => a.product_id - b.product_id)) {
         const productResult = await client.query<ProductRow>(
           `
-            SELECT id, price
-            FROM products
+            UPDATE products
+            SET stock_quantity = stock_quantity - $2
             WHERE id = $1
               AND is_active = TRUE
-            LIMIT 1
+              AND stock_quantity >= $2
+            RETURNING id, price
           `,
-          [item.product_id],
+          [item.product_id, item.quantity],
         );
 
         const product = productResult.rows[0];
 
         if (!product) {
-          throw new BadRequestException(
-            `Product ${item.product_id} does not exist`,
+          const existence = await client.query<{ id: string }>(
+            'SELECT id FROM products WHERE id = $1 AND is_active = TRUE LIMIT 1',
+            [item.product_id],
+          );
+
+          if (existence.rowCount === 0) {
+            throw new BadRequestException(
+              `Product ${item.product_id} does not exist`,
+            );
+          }
+
+          throw new ConflictException(
+            `Insufficient stock for product ${item.product_id}`,
           );
         }
 
-        totalAmount += Number(product.price) * item.quantity;
+        reservedProducts.set(item.product_id, product);
+        const unitPrice = Number(product.price);
+        if (!Number.isSafeInteger(unitPrice) || unitPrice <= 0) {
+          throw new BadRequestException('Product price is outside safe bounds');
+        }
+
+        totalAmount += BigInt(unitPrice) * BigInt(item.quantity);
+
+        if (totalAmount > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new BadRequestException('Order total is outside safe bounds');
+        }
       }
 
       const orderResult = await client.query<OrderRow>(
@@ -179,7 +249,7 @@ export class OrdersService {
           VALUES ($1, 'created', $2)
           RETURNING id, status, total_amount
         `,
-        [user.id, totalAmount],
+        [user.id, Number(totalAmount)],
       );
 
       const order = orderResult.rows[0];
@@ -188,25 +258,8 @@ export class OrdersService {
         throw new Error('Failed to create order');
       }
 
-      for (const item of input.items) {
-        const productResult = await client.query<ProductRow>(
-          `
-            SELECT id, price
-            FROM products
-            WHERE id = $1
-            LIMIT 1
-          `,
-          [item.product_id],
-        );
-
-        const product = productResult.rows[0];
-
-        if (!product) {
-          throw new BadRequestException(
-            `Product ${item.product_id} does not exist`,
-          );
-        }
-
+      for (const item of normalizedItems) {
+        const product = reservedProducts.get(item.product_id);
         await client.query(
           `
             INSERT INTO order_items (
@@ -217,7 +270,7 @@ export class OrdersService {
             )
             VALUES ($1, $2, $3, $4)
           `,
-          [order.id, item.product_id, item.quantity, Number(product.price)],
+          [order.id, item.product_id, item.quantity, Number(product?.price)],
         );
       }
 
@@ -225,7 +278,7 @@ export class OrdersService {
         eventId: `order.placed:${order.id}`,
         orderId: Number(order.id),
         userId: Number(user.id),
-        items: input.items,
+        items: normalizedItems,
         totalAmount: Number(order.total_amount),
       });
 
@@ -236,15 +289,17 @@ export class OrdersService {
           UPDATE idempotency_keys
           SET order_id = $2
           WHERE idempotency_key = $1
+            AND user_id = $3
+            AND operation = 'create_order'
         `,
-        [idempotencyKey, order.id],
+        [idempotencyKey, order.id, userId],
       );
 
       await client.query('COMMIT');
 
       return {
         id: Number(order.id),
-        items: input.items,
+        items: normalizedItems,
         total_cents: Number(order.total_amount),
         status: order.status,
       };
@@ -294,30 +349,92 @@ export class OrdersService {
     };
   }
 
-  async updateStatus(id: number, status: string): Promise<OrderResponse> {
+  async updateStatus(
+    id: number,
+    status: string,
+    userId: number,
+    role: UserRole,
+  ): Promise<OrderResponse> {
     if (!this.isOrderStatus(status)) {
       throw new BadRequestException(`Invalid order status: ${status}`);
     }
 
-    const result = await this.databaseService.query<OrderRow>(
-      `
+    const client = await this.databaseService.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      const currentResult = await client.query<{ status: OrderStatus }>(
+        'SELECT status FROM orders WHERE id = $1 FOR UPDATE',
+        [id],
+      );
+      const current = currentResult.rows[0];
+
+      if (!current) {
+        throw new NotFoundException(`Order ${id} not found`);
+      }
+
+      if (role === 'seller') {
+        const ownership = await client.query(
+          `
+            SELECT 1
+            FROM order_items oi
+            JOIN products p ON p.id = oi.product_id
+            WHERE oi.order_id = $1
+              AND p.owner_id = $2
+            LIMIT 1
+          `,
+          [id, userId],
+        );
+
+        if (ownership.rowCount !== 1) {
+          throw new ForbiddenException('Seller does not own this order');
+        }
+      }
+
+      if (current.status !== 'created' || status !== 'cancelled') {
+        throw new ConflictException(
+          `Invalid order status transition: ${current.status} -> ${status}`,
+        );
+      }
+
+      const result = await client.query<OrderRow>(
+        `
           UPDATE orders
           SET status = $2
           WHERE id = $1
+            AND status = 'created'
           RETURNING id, status, total_amount
         `,
-      [id, status],
-    );
+        [id, status],
+      );
+      const order = result.rows[0];
 
-    const order = result.rows[0];
+      if (!order) {
+        throw new ConflictException('Order status changed concurrently');
+      }
 
-    if (!order) {
-      throw new NotFoundException(`Order ${id} not found`);
+      await client.query(
+        `
+          UPDATE products p
+          SET stock_quantity = p.stock_quantity + oi.quantity
+          FROM order_items oi
+          WHERE oi.order_id = $1
+            AND p.id = oi.product_id
+        `,
+        [id],
+      );
+
+      await client.query('COMMIT');
+      this.orderEventsService.emitStatusChanged(Number(order.id), order.status);
+
+      return this.findById(id);
+    } catch (error) {
+      await this.rollback(client);
+      throw error;
+    } finally {
+      client.release();
     }
-
-    this.orderEventsService.emitStatusChanged(Number(order.id), order.status);
-
-    return this.findById(id);
   }
 
   async belongsToUser(orderId: number, userId: number): Promise<boolean> {

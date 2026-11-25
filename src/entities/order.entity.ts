@@ -9,9 +9,12 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-import { User } from './user.entity';
-import { OrderItem } from './order-item.entity';
-import { PostProcessingTask } from './post-processing-task.entity';
+import { User as UserEntity } from './user.entity';
+import type { User } from './user.entity';
+import { OrderItem as OrderItemEntity } from './order-item.entity';
+import type { OrderItem } from './order-item.entity';
+import { PostProcessingTask as PostProcessingTaskEntity } from './post-processing-task.entity';
+import type { PostProcessingTask } from './post-processing-task.entity';
 
 export const ORDER_STATUSES = [
   'created',
@@ -57,7 +60,7 @@ export class Order {
   })
   createdAt!: Date;
 
-  @ManyToOne(() => User, user => user.orders, {
+  @ManyToOne(() => UserEntity, user => user.orders, {
     onDelete: 'RESTRICT',
   })
   @JoinColumn({
@@ -66,9 +69,9 @@ export class Order {
   })
   user!: User;
 
-  @OneToMany(() => OrderItem, orderItem => orderItem.order)
+  @OneToMany(() => OrderItemEntity, orderItem => orderItem.order)
   items!: OrderItem[];
 
-  @OneToMany(() => PostProcessingTask, task => task.order)
+  @OneToMany(() => PostProcessingTaskEntity, task => task.order)
   postProcessingTasks!: PostProcessingTask[];
 }

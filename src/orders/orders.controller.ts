@@ -18,6 +18,8 @@ import type { Response } from 'express';
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard';
 import { OrderEventsService } from './order-events.service';
 import { OrdersService } from './orders.service';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 
 interface CreateOrderRequest {
   items: Array<{
@@ -38,27 +40,47 @@ export class OrdersController {
   ) {}
 
   @Post()
+  @UseGuards(AuthGuard)
   createOrder(
     @Headers('idempotency-key')
     idempotencyKey: string | undefined,
     @Body()
     body: CreateOrderRequest,
+    @Req()
+    request: AuthenticatedRequest,
   ) {
     if (!idempotencyKey) {
       throw new BadRequestException('Idempotency-Key header is required');
     }
 
-    return this.ordersService.create(body, idempotencyKey);
+    if (!request.user) {
+      throw new ForbiddenException('Authenticated user is required');
+    }
+
+    return this.ordersService.create(body, idempotencyKey, Number(request.user.sub));
   }
 
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('seller', 'admin')
   @Patch(':id/status')
   updateOrderStatus(
     @Param('id', ParseIntPipe)
     id: number,
     @Body()
     body: UpdateOrderStatusRequest,
+    @Req()
+    request: AuthenticatedRequest,
   ) {
-    return this.ordersService.updateStatus(id, body.status);
+    if (!request.user) {
+      throw new ForbiddenException('Authenticated user is required');
+    }
+
+    return this.ordersService.updateStatus(
+      id,
+      body.status,
+      Number(request.user.sub),
+      request.user.role,
+    );
   }
 
   @Get(':id/events')

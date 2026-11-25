@@ -8,7 +8,8 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-import { Order } from './order.entity';
+import { Order as OrderEntity } from './order.entity';
+import type { Order } from './order.entity';
 
 export const POST_PROCESSING_TASK_STATUSES = ['pending', 'done'] as const;
 
@@ -65,7 +66,7 @@ export class PostProcessingTask {
   })
   processedAt!: Date | null;
 
-  @ManyToOne(() => Order, order => order.postProcessingTasks, {
+  @ManyToOne(() => OrderEntity, order => order.postProcessingTasks, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({
