@@ -12,6 +12,10 @@ import { httpRequestDurationSeconds, httpRequestsTotal } from './metrics';
 @Injectable()
 export class MetricsInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    if (context.getType() !== 'http') {
+      return next.handle();
+    }
+
     const http = context.switchToHttp();
 
     const request = http.getRequest<Request>();

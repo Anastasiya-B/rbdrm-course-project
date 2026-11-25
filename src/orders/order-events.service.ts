@@ -17,6 +17,7 @@ const MAX_BUFFERED_EVENTS_PER_ORDER = 100;
 export class OrderEventsService implements OnModuleInit, OnModuleDestroy {
   private readonly subject = new Subject<OrderStatusEvent>();
   private readonly buffers = new Map<number, OrderStatusEvent[]>();
+  private readonly seenEvents = new Set<string>();
   private nextEventId = 1;
   private publisher?: Redis;
   private subscriber?: Redis;
@@ -33,7 +34,7 @@ export class OrderEventsService implements OnModuleInit, OnModuleDestroy {
     this.subscriber.on('message', (channel, message) => {
       if (channel !== this.channel) return;
       try {
-        this.subject.next(JSON.parse(message) as OrderStatusEvent);
+        this.recordEvent(JSON.parse(message) as OrderStatusEvent);
       } catch {
         // Ignore malformed cross-process notifications.
       }
@@ -55,7 +56,27 @@ export class OrderEventsService implements OnModuleInit, OnModuleDestroy {
 
     this.nextEventId += 1;
 
-    const buffer = this.buffers.get(orderId) ?? [];
+    this.recordEvent(event);
+    void this.publisher?.publish(this.channel, JSON.stringify(event));
+
+    return event;
+  }
+
+  private recordEvent(event: OrderStatusEvent): void {
+    const eventKey = `${event.orderId}:${event.id}:${event.occurredAt}`;
+
+    if (this.seenEvents.has(eventKey)) {
+      return;
+    }
+
+    this.seenEvents.add(eventKey);
+
+    if (this.seenEvents.size > MAX_BUFFERED_EVENTS_PER_ORDER * 10) {
+      const oldest = this.seenEvents.values().next().value;
+      if (oldest) this.seenEvents.delete(oldest);
+    }
+
+    const buffer = this.buffers.get(event.orderId) ?? [];
 
     buffer.push(event);
 
@@ -63,11 +84,8 @@ export class OrderEventsService implements OnModuleInit, OnModuleDestroy {
       buffer.splice(0, buffer.length - MAX_BUFFERED_EVENTS_PER_ORDER);
     }
 
-    this.buffers.set(orderId, buffer);
+    this.buffers.set(event.orderId, buffer);
     this.subject.next(event);
-    void this.publisher?.publish(this.channel, JSON.stringify(event));
-
-    return event;
   }
 
   getEventsAfter(orderId: number, lastEventId: number): OrderStatusEvent[] {
