@@ -1,0 +1,35 @@
+{
+  "verification": "phase5",
+  "project": "marketplace-course",
+  "api_port": 3300,
+  "stack": {
+    "postgres": "healthy",
+    "pgbouncer": "healthy",
+    "rabbitmq": "healthy",
+    "redis_cache": "healthy",
+    "redis_queue": "healthy",
+    "minio": "healthy",
+    "pact_broker": "healthy",
+    "api": "healthy",
+    "db_init": "exited_0",
+    "outbox_relay": "running",
+    "payment_worker": "running"
+  },
+  "smoke_runs": [
+    { "health": 200, "ready": 200, "status": "paid", "replay_status": 201 },
+    { "health": 200, "ready": 200, "status": "paid", "replay_status": 201 }
+  ],
+  "concurrency": {
+    "initial_stock": 20,
+    "requests": 50,
+    "successful_purchases": 20,
+    "rejected_purchases": 30,
+    "final_stock": 0,
+    "persisted_orders_delta": 20,
+    "checkout_outbox_delta": 20,
+    "purchased_quantity": 20,
+    "overselling": 0,
+    "duplicate_payment_effects": 0
+  },
+  "secrets": "not recorded"
+}

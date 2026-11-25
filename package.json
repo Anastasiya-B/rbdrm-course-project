@@ -16,6 +16,7 @@
     "seed": "bash scripts/with-secrets.sh dev node dist/seed.js",
     "db:init": "node dist/init.js",
     "smoke:compose": "node scripts/compose-smoke.mjs",
+    "verify:compose-concurrency": "node scripts/compose-concurrency.mjs",
     "demo:nplus1": "bash scripts/with-secrets.sh dev node dist/demo-nplus1.js",
     "demo:race": "bash scripts/with-secrets.sh dev node dist/demo-race.js",
     "demo:workers": "bash scripts/with-secrets.sh dev node dist/demo-workers.js",

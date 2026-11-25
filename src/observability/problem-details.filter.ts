@@ -23,7 +23,9 @@ export class ProblemDetailsFilter implements ExceptionFilter {
         : status >= 500 ? 'Internal server error' : 'Request failed';
     const title = status >= 500
       ? 'Internal Server Error'
-      : HttpStatus[status]?.replace(/([A-Z])/g, ' $1').trim() ?? 'Request Error';
+      : HttpStatus[status]
+        ? HttpStatus[status].replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, character => character.toUpperCase())
+        : 'Request Error';
 
     response.status(status).type('application/problem+json').json({
       type: `https://marketplace.example/problems/${status}`,

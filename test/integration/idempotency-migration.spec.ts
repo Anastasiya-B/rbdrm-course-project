@@ -50,8 +50,12 @@ describe('idempotency migration', () => {
   });
 
   afterAll(async () => {
-    await dataSource.destroy();
-    await container.stop();
+    if (dataSource?.isInitialized) {
+      await dataSource.destroy();
+    }
+    if (container) {
+      await container.stop();
+    }
   });
 
   it('supports legacy rows, user-scoped uniqueness, and reversal', async () => {

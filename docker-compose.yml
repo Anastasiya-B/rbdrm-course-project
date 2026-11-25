@@ -154,6 +154,7 @@ services:
       REDIS_URL: redis://redis-cache:6379
       REDIS_QUEUE_URL: redis://redis-queue:6379
       PAYMENT_WEBHOOK_SECRET: local-compose-webhook-secret
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-1000}
       JWT_KID: ${JWT_KID:?run scripts/init-local-compose-secrets.sh first}
       JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?run scripts/init-local-compose-secrets.sh first}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?run scripts/init-local-compose-secrets.sh first}
