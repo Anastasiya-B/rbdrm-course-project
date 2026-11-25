@@ -1,0 +1,9 @@
+alb-dns=hw31-alb-6319a9a-276409093.eu-north-1.elb.amazonaws.com
+http-code=200
+target-state=healthy
+az-before=eu-north-1b
+az-after=eu-north-1a
+failover-seconds=79
+event=Multi-AZ instance failover completed
+nat-minutes=5
+nat-billed-hours=1

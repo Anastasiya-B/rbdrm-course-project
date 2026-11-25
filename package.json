@@ -51,7 +51,14 @@
     "demo:pdb": "bash demo/demo-pdb.sh",
     "demo:logs": "bash scripts/with-secrets.sh dev bash demo/demo-logs.sh",
     "demo:metrics": "bash scripts/with-secrets.sh dev bash demo/demo-metrics.sh",
-    "demo:trace": "bash scripts/with-secrets.sh dev bash demo/demo-trace.sh"
+    "demo:trace": "bash scripts/with-secrets.sh dev bash demo/demo-trace.sh",
+    "up:base": "bash scripts/with-secrets.sh dev bash scripts/hw31-up-base.sh",
+    "destroy:base": "bash scripts/with-secrets.sh dev bash scripts/hw31-destroy-base.sh",
+    "up:demo": "bash scripts/with-secrets.sh dev bash scripts/hw31-up-demo.sh",
+    "destroy:demo": "bash scripts/with-secrets.sh dev bash scripts/hw31-destroy-demo.sh",
+    "demo:alb": "bash scripts/with-secrets.sh dev bash demo/demo-alb.sh",
+    "demo:failover": "bash scripts/with-secrets.sh dev bash demo/demo-failover.sh",
+    "demo:nat": "bash scripts/with-secrets.sh dev bash demo/demo-nat.sh"
   },
   "repository": {
     "type": "git",

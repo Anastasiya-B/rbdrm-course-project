@@ -1,0 +1,10 @@
+config:
+  aws:region: eu-north-1
+  aws:defaultTags:
+    tags:
+      Project: nodejs-pro-hw31
+      Stack: base
+      ManagedBy: pulumi
+  rbdrm-hw31-base:budgetEmail: zona2406@gmail.com
+  rbdrm-hw31-base:githubOwner: Anastasiya-B
+  rbdrm-hw31-base:githubRepo: rbdrm-course-project
