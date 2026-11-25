@@ -1,0 +1,3 @@
+GET /orders the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]
+POST /orders the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]
+GET /orders/{id} the endpoint no longer allows anonymous access and now only accepts `bearerAuth` [api-security-anonymous-access-removed]

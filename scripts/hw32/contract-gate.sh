@@ -12,6 +12,11 @@ REVISION_SPEC="${2:?revision spec path is required}"
 
 OASDIFF_IMAGE="${OASDIFF_IMAGE:-tufin/oasdiff:v1.35.0}"
 
+# These are the only intentionally approved security breaking changes in the
+# course project: authentication was added to the three order operations.
+# The ignore file matches both the exact operation and oasdiff error ID.
+ERR_IGNORE_FILE="$ROOT/scripts/hw32/contract-gate.err-ignore"
+
 BASE_ABS="$(
   cd "$(dirname "$BASE_SPEC")"
   printf '%s/%s' "$PWD" "$(basename "$BASE_SPEC")"
@@ -42,6 +47,12 @@ esac
 
 BASE_CONTAINER_PATH="/repo/${BASE_ABS#"$ROOT"/}"
 REVISION_CONTAINER_PATH="/repo/${REVISION_ABS#"$ROOT"/}"
+ERR_IGNORE_CONTAINER_PATH="/repo/${ERR_IGNORE_FILE#"$ROOT"/}"
+
+if [ ! -f "$ERR_IGNORE_FILE" ]; then
+  echo "Missing contract exception file: $ERR_IGNORE_FILE" >&2
+  exit 2
+fi
 
 docker run \
   --rm \
@@ -49,6 +60,7 @@ docker run \
   "$OASDIFF_IMAGE" \
   breaking \
   --fail-on ERR \
+  --err-ignore "$ERR_IGNORE_CONTAINER_PATH" \
   -- \
   "$BASE_CONTAINER_PATH" \
   "$REVISION_CONTAINER_PATH"
