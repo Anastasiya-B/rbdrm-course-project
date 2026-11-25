@@ -6,8 +6,9 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 
-RUN --mount=type=secret,id=npm_token,target=/run/secrets/npm_token,required=true \
-    test -s /run/secrets/npm_token && \
+RUN if [ -s /run/secrets/npm_token ]; then \
+      npm config set //registry.npmjs.org/:_authToken "$(cat /run/secrets/npm_token)"; \
+    fi && \
     npm ci --omit=dev && \
     npm cache clean --force
 
@@ -18,8 +19,9 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 
-RUN --mount=type=secret,id=npm_token,target=/run/secrets/npm_token,required=true \
-    test -s /run/secrets/npm_token && \
+RUN if [ -s /run/secrets/npm_token ]; then \
+      npm config set //registry.npmjs.org/:_authToken "$(cat /run/secrets/npm_token)"; \
+    fi && \
     npm ci
 
 COPY tsconfig.json tsconfig.build.json ./

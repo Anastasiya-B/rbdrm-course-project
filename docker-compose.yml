@@ -1,13 +1,12 @@
+name: ${COMPOSE_PROJECT_NAME:-marketplace-course}
+
 services:
   postgres:
     image: postgres:16
-    container_name: marketplace-postgres
     environment:
       POSTGRES_DB: marketplace
       POSTGRES_USER: marketplace
       POSTGRES_PASSWORD: marketplace_password
-    ports:
-      - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,12 +17,9 @@ services:
       start_period: 5s
   pgbouncer:
     image: edoburu/pgbouncer:latest
-    container_name: marketplace-pgbouncer
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - '6432:6432'
     volumes:
       - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
       - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
@@ -39,13 +35,12 @@ services:
       start_period: 5s
   rabbitmq:
     image: rabbitmq:4.2-management
-    container_name: marketplace-rabbitmq
+    user: '0:0'
     environment:
       RABBITMQ_DEFAULT_USER: app
       RABBITMQ_DEFAULT_PASS: app
-    ports:
-      - '5672:5672'
-      - '15672:15672'
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_running']
       interval: 3s
@@ -54,7 +49,6 @@ services:
       start_period: 10s
   pact-broker-db:
     image: postgres:16-alpine
-    container_name: marketplace-pact-broker-db
     environment:
       POSTGRES_DB: pact_broker
       POSTGRES_USER: pact_broker
@@ -69,12 +63,11 @@ services:
       start_period: 5s
   pact-broker:
     image: pactfoundation/pact-broker:latest
-    container_name: marketplace-pact-broker
     depends_on:
       pact-broker-db:
         condition: service_healthy
     ports:
-      - '9292:9292'
+      - '${PACT_PORT:-23929}:9292'
     environment:
       PACT_BROKER_PORT: '9292'
       PACT_BROKER_DATABASE_URL: postgres://pact_broker:pact_broker_password@pact-broker-db/pact_broker
@@ -93,7 +86,6 @@ services:
       start_period: 10s
   redis-cache:
     image: redis:8.4-alpine
-    container_name: marketplace-redis-cache
     command:
       [
         'redis-server',
@@ -102,8 +94,8 @@ services:
         '--maxmemory-policy',
         'allkeys-lru',
       ]
-    ports:
-      - '6381:6379'
+    volumes:
+      - redis_cache_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 3s
@@ -112,7 +104,6 @@ services:
 
   redis-queue:
     image: redis:8.4-alpine
-    container_name: marketplace-redis-queue
     command:
       [
         'redis-server',
@@ -123,8 +114,8 @@ services:
         '--appendfsync',
         'everysec',
       ]
-    ports:
-      - '6382:6379'
+    volumes:
+      - redis_queue_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 3s
@@ -132,23 +123,79 @@ services:
       retries: 30
   minio:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
-    container_name: marketplace-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: hw26user
       MINIO_ROOT_PASSWORD: hw26secretpass
     ports:
-      - '22650:9000'
-      - '22651:9001'
-    tmpfs:
-      - /data:size=1g
+      - '${MINIO_API_PORT:-23650}:9000'
+      - '${MINIO_CONSOLE_PORT:-23651}:9001'
+    volumes:
+      - minio_data:/data
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
       interval: 3s
       timeout: 5s
       retries: 30
       start_period: 5s
+  db-init:
+    build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
+    command: ['dist/init.js']
+    environment: &app-env
+      NODE_ENV: production
+      PORT: '3000'
+      DB_URL: postgresql://marketplace:marketplace_password@postgres:5432/marketplace
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USER: marketplace
+      DB_PASSWORD: marketplace_password
+      DB_NAME: marketplace
+      BROKER_URL: amqp://app:app@rabbitmq:5672
+      REDIS_URL: redis://redis-cache:6379
+      REDIS_QUEUE_URL: redis://redis-queue:6379
+      PAYMENT_WEBHOOK_SECRET: local-compose-webhook-secret
+      JWT_KID: ${JWT_KID:?run scripts/init-local-compose-secrets.sh first}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?run scripts/init-local-compose-secrets.sh first}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?run scripts/init-local-compose-secrets.sh first}
+      REFRESH_TOKEN_PEPPER: ${REFRESH_TOKEN_PEPPER:?run scripts/init-local-compose-secrets.sh first}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+  api:
+    build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
+    command: ['dist/main.js']
+    ports: ['${API_PORT:-3300}:3000']
+    environment: *app-env
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      redis-cache: { condition: service_healthy }
+      redis-queue: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', '/nodejs/bin/node', '-e', "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+  outbox-relay:
+    build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
+    command: ['dist/outbox/run-relay.js']
+    environment: *app-env
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+  payment-worker:
+    build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
+    command: ['dist/payments/run-workers.js']
+    environment: *app-env
+    depends_on:
+      db-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      redis-cache: { condition: service_healthy }
 volumes:
   postgres_data:
   rabbitmq_data:
   pact_broker_data:
+  redis_cache_data:
+  redis_queue_data:
+  minio_data:

@@ -9,3 +9,4 @@ node_modules/
 secrets/
 spec.json
 spec.json.npm_token
+.env.compose.local

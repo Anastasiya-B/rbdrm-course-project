@@ -3,9 +3,7 @@ import 'reflect-metadata';
 import AppDataSource from './data-source';
 import { hashPassword } from './auth/password';
 
-async function seed(): Promise<void> {
-  await AppDataSource.initialize();
-
+export async function seed(): Promise<void> {
   const queryRunner = AppDataSource.createQueryRunner();
 
   try {
@@ -160,13 +158,7 @@ async function seed(): Promise<void> {
           true
         )
       ON CONFLICT (id)
-      DO UPDATE SET
-        owner_id = EXCLUDED.owner_id,
-        name = EXCLUDED.name,
-        description = EXCLUDED.description,
-        price = EXCLUDED.price,
-        stock_quantity = EXCLUDED.stock_quantity,
-        is_active = EXCLUDED.is_active
+      DO NOTHING
     `);
 
     await queryRunner.query(`
@@ -270,11 +262,12 @@ async function seed(): Promise<void> {
     throw error;
   } finally {
     await queryRunner.release();
-    await AppDataSource.destroy();
   }
 }
 
-seed().catch(error => {
-  console.error('Seed failed:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  AppDataSource.initialize().then(() => seed()).then(() => AppDataSource.destroy()).catch(error => {
+    console.error('Seed failed:', error);
+    process.exit(1);
+  });
+}

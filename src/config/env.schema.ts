@@ -9,6 +9,15 @@ export const envSchema = z.object({
     .string()
     .min(1, 'DB_PASSWORD_FILE is required')
     .default('secrets/db_password'),
+
+  JWT_KID: z.string().optional(),
+  JWT_PRIVATE_KEY: z.string().optional(),
+  JWT_PUBLIC_KEY: z.string().optional(),
+  REFRESH_TOKEN_PEPPER: z.string().optional(),
+  BROKER_URL: z.string().optional(),
+  REDIS_URL: z.string().optional(),
+  REDIS_QUEUE_URL: z.string().optional(),
+  PAYMENT_WEBHOOK_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

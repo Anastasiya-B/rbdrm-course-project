@@ -2030,3 +2030,21 @@ docker run --rm \
 ```
 
 Expected: exit `0` with no diagnostics.
+## Local Docker Compose stack
+
+Prerequisites: Docker Desktop with Compose v2. Generate non-production local
+authentication secrets once, then start an isolated project:
+
+```sh
+bash scripts/init-local-compose-secrets.sh .env.compose.local
+COMPOSE_PROJECT_NAME=marketplace-course API_PORT=3300 docker compose --env-file .env.compose.local up -d --build --wait
+API_URL=http://127.0.0.1:3300 npm run smoke:compose
+```
+
+The stack runs the API on `http://127.0.0.1:3300` (override with `API_PORT`), database initialization,
+the outbox relay, and payment worker. Demo login is
+`anna@example.com` / `Password123!`. Liveness and readiness are `/healthz` and
+`/readyz`; inspect services with `docker compose ... ps` and logs with
+`docker compose ... logs -f api payment-worker outbox-relay`. Stop the isolated
+stack with `docker compose ... down` (without `-v`, so named data volumes are
+preserved).
