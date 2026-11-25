@@ -3,6 +3,7 @@ import type { Channel } from 'amqplib';
 export const SHOP_EVENTS_EXCHANGE = 'shop.events';
 export const ORDER_PLACED_ROUTING_KEY = 'order.placed';
 export const ORDER_PLACED_QUEUE = 'shop.order.placed';
+export const ORDER_PLACED_RETRY_QUEUE = 'shop.order.placed.retry';
 
 export const SHOP_EVENTS_DLX = 'shop.events.dlx';
 export const ORDER_PLACED_DLQ_ROUTING_KEY = 'order.placed.dead';
@@ -40,6 +41,16 @@ export async function assertOrderPlacedTopology(
       'x-queue-type': 'quorum',
       'x-dead-letter-exchange': SHOP_EVENTS_DLX,
       'x-dead-letter-routing-key': ORDER_PLACED_DLQ_ROUTING_KEY,
+    },
+  });
+
+  await channel.assertQueue(ORDER_PLACED_RETRY_QUEUE, {
+    durable: true,
+    arguments: {
+      'x-queue-type': 'quorum',
+      'x-message-ttl': 500,
+      'x-dead-letter-exchange': SHOP_EVENTS_EXCHANGE,
+      'x-dead-letter-routing-key': ORDER_PLACED_ROUTING_KEY,
     },
   });
 

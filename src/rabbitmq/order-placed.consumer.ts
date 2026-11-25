@@ -4,13 +4,18 @@ import AppDataSource from '../data-source';
 import type { OrderPlacedPayload } from '../outbox/order-placed-event';
 import type { OrderPlacedMessage } from './order-placed-message';
 import { connectToBroker } from './broker';
+import type { PaymentService } from '../payments/payment.service';
 import {
   assertOrderPlacedTopology,
   ORDER_PLACED_PREFETCH,
   ORDER_PLACED_QUEUE,
+  ORDER_PLACED_RETRY_QUEUE,
 } from './topology';
+import { createLogger } from '../observability/logger';
 
 const CONSUMER_NAME = 'order-placed-consumer';
+const MAX_RETRIES = 3;
+const logger = createLogger('payment.consumer');
 
 export interface ConsumerStats {
   delivered: number;
@@ -99,8 +104,9 @@ function parseOrderPlacedEvent(message: ConsumeMessage): OrderPlacedPayload {
 export async function startOrderPlacedConsumer(
   onMessage?: (
     event: OrderPlacedPayload,
-    result: 'applied' | 'skipped',
+    result: 'applied' | 'skipped' | 'paid' | 'duplicate',
   ) => Promise<void> | void,
+  paymentService?: PaymentService,
 ): Promise<{
   channel: Channel;
   close: () => Promise<void>;
@@ -131,9 +137,15 @@ export async function startOrderPlacedConsumer(
       try {
         const event = parseOrderPlacedEvent(message);
 
-        const result = await processOrderPlacedEvent(event);
+        const result = paymentService
+          ? await paymentService.finalizePayment({
+              orderId: Number(event.data.orderId),
+              amount: Number(event.data.totalAmount),
+              operationKey: `order:${event.data.orderId}:capture`,
+            })
+          : await processOrderPlacedEvent(event);
 
-        if (result === 'applied') {
+        if (result === 'applied' || result === 'paid') {
           stats.effect += 1;
         } else {
           stats.skipped += 1;
@@ -145,8 +157,46 @@ export async function startOrderPlacedConsumer(
 
         channel.ack(message);
         stats.acked += 1;
-      } catch {
-        channel.nack(message, false, false);
+      } catch (error) {
+        const retryCount = Number(
+          message.properties.headers?.['x-retry-count'] ?? 0,
+        );
+        const status = (error as { getStatus?: () => number })?.getStatus?.();
+        const permanent = typeof status === 'number' && status >= 400 && status < 500;
+
+        logger.error(
+          {
+            orderId: (() => {
+              try {
+                return JSON.parse(message.content.toString('utf8')).data?.orderId;
+              } catch {
+                return undefined;
+              }
+            })(),
+            messageId: message.properties.messageId,
+            retryCount,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          permanent || retryCount >= MAX_RETRIES
+            ? 'payment processing failed permanently'
+            : 'payment processing retry scheduled',
+        );
+
+        if (!permanent && retryCount < MAX_RETRIES) {
+          channel.sendToQueue(ORDER_PLACED_RETRY_QUEUE, message.content, {
+            persistent: true,
+            contentType: message.properties.contentType,
+            type: message.properties.type,
+            messageId: message.properties.messageId,
+            headers: {
+              ...message.properties.headers,
+              'x-retry-count': retryCount + 1,
+            },
+          });
+          channel.ack(message);
+        } else {
+          channel.nack(message, false, false);
+        }
       }
     },
     {

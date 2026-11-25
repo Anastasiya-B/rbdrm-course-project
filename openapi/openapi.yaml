@@ -212,6 +212,39 @@ paths:
         '409':
           $ref: '#/components/responses/Conflict'
 
+  /payments/webhook:
+    post:
+      operationId: paymentWebhook
+      summary: Simulated payment provider webhook
+      description: Finalizes an order using its frozen checkout amount. This endpoint is authenticated by an HMAC signature over the raw JSON body.
+      parameters:
+        - in: header
+          name: X-Payment-Signature
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event_id, order_id, amount]
+              properties:
+                event_id:
+                  type: string
+                order_id:
+                  type: integer
+                amount:
+                  type: integer
+      responses:
+        '200':
+          description: Payment finalized or already processed.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
 components:
   securitySchemes:
     bearerAuth:

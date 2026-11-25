@@ -21,6 +21,7 @@ import { AddUserAuthFields1790770200000 } from '../../../src/migrations/17907702
 import { AddAccessTokenDenylist1790770800000 } from '../../../src/migrations/1790770800000-AddAccessTokenDenylist';
 import { AddFiles1790771400000 } from '../../../src/migrations/1790771400000-AddFiles';
 import { StrengthenOrderIdempotency1790772000000 } from '../../../src/migrations/1790772000000-StrengthenOrderIdempotency';
+import { AddPaymentProcessing1790773200000 } from '../../../src/migrations/1790773200000-AddPaymentProcessing';
 
 export interface IntegrationDatabase {
   container: StartedPostgreSqlContainer;
@@ -44,6 +45,7 @@ export async function startIntegrationDatabase(): Promise<IntegrationDatabase> {
       AddAccessTokenDenylist1790770800000,
       AddFiles1790771400000,
       StrengthenOrderIdempotency1790772000000,
+      AddPaymentProcessing1790773200000,
     ],
     synchronize: false,
   });

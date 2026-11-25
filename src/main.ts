@@ -18,7 +18,7 @@ const DRAIN_DELAY_MS = 5_000;
 async function bootstrap() {
   getAuthConfig();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   const configService = app.get<ConfigService<Env, true>>(ConfigService);
 

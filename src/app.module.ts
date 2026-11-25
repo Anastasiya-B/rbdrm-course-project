@@ -17,6 +17,7 @@ import { OrderEventsService } from './orders/order-events.service';
 import { OrdersController } from './orders/orders.controller';
 import { OrdersGateway } from './orders/orders.gateway';
 import { OrdersService } from './orders/orders.service';
+import { PaymentModule } from './payments/payment.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { OrdersService } from './orders/orders.service';
 
     AuthModule,
     FilesModule,
+    PaymentModule,
   ],
 
   controllers: [

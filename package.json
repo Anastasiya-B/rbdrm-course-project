@@ -28,6 +28,8 @@
     "demo:dlq": "bash scripts/with-secrets.sh dev node dist/demo-rabbit-dlq.js",
     "demo:duplicate": "bash scripts/with-secrets.sh dev node dist/demo-rabbit-duplicate.js",
     "demo:outbox": "bash scripts/with-secrets.sh dev node dist/demo-outbox.js",
+    "worker:outbox": "bash scripts/with-secrets.sh dev node dist/outbox/run-relay.js",
+    "worker:payments": "bash scripts/with-secrets.sh dev node dist/payments/run-workers.js",
     "demo:crash-write": "bash scripts/with-secrets.sh dev node dist/demo-crash-write.js",
     "demo:crash-relay": "bash scripts/with-secrets.sh dev node dist/demo-crash-relay.js",
     "demo:cache": "bash scripts/with-secrets.sh dev node dist/demo-cache.js",
