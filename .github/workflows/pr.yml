@@ -1,0 +1,447 @@
+name: HW32 PR Pipeline
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: hw32-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/anastasiya-b/rbdrm-course-project
+  PULUMI_CONFIG_PASSPHRASE: hw32-ci-local-state
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prepare OpenAPI baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .hw32
+
+          git fetch \
+            --no-tags \
+            origin \
+            "${{ github.base_ref }}"
+
+          git show \
+            "origin/${{ github.base_ref }}:openapi/openapi.yaml" \
+            > .hw32/openapi-base.yaml
+
+      - name: OpenAPI compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bash scripts/hw32/contract-gate.sh \
+            .hw32/openapi-base.yaml \
+            openapi/openapi.yaml
+
+      - name: Architecture boundaries
+        run: npm run architecture
+
+  build:
+    name: Build once
+    runs-on: ubuntu-latest
+
+    needs:
+      - quality
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image-ref: ${{ steps.image.outputs.ref }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Compute image reference
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REF="$IMAGE_REPOSITORY:${{ github.event.pull_request.head.sha }}"
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.image.outputs.ref }}
+          secrets: |
+            npm_token=${{ github.token }}
+
+  verify-deploy:
+    name: Preview, OIDC, deploy and rollout
+    runs-on: ubuntu-latest
+
+    needs:
+      - quality
+      - build
+
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+
+    env:
+      SKIP_VAULT: '1'
+      IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+      BUILT_DIGEST: ${{ needs.build.outputs.digest }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PULUMI_STACK_NAME: ci
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Install Pulumi dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: Install kind
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KIND_VERSION="v0.30.0"
+
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            -o /tmp/kind \
+            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+
+          chmod +x /tmp/kind
+          sudo mv /tmp/kind /usr/local/bin/kind
+
+          kind version
+
+      - name: Verify kubectl
+        run: kubectl version --client
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Pull built image by digest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEPLOY_IMAGE="$IMAGE_REF@$BUILT_DIGEST"
+
+          docker pull "$DEPLOY_IMAGE"
+
+          echo "DEPLOY_IMAGE=$DEPLOY_IMAGE" >> "$GITHUB_ENV"
+
+      - name: Prepare evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf evidence/hw32
+          mkdir -p evidence/hw32
+
+      - name: Record build invocation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          printf '%s\n' \
+            "build ref=$IMAGE_REF digest=$BUILT_DIGEST" \
+            > evidence/hw32/build.log
+
+      - name: Scan built image
+        shell: bash
+        run: |
+          set +e
+
+          IMAGE_NAME="$DEPLOY_IMAGE" \
+          SCAN_MAX=10 \
+            npm run scan
+
+          STATUS="$?"
+
+          set -e
+
+          printf '%s\n' \
+            "$STATUS" \
+            > evidence/hw32/gate-scan-exit.txt
+
+          exit 0
+
+      - name: Prepare ephemeral application secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PRIVATE_KEY_FILE="$(mktemp)"
+          PUBLIC_KEY_FILE="$(mktemp)"
+
+          openssl genpkey \
+            -algorithm RSA \
+            -pkeyopt rsa_keygen_bits:2048 \
+            -out "$PRIVATE_KEY_FILE" \
+            >/dev/null 2>&1
+
+          openssl pkey \
+            -in "$PRIVATE_KEY_FILE" \
+            -pubout \
+            -out "$PUBLIC_KEY_FILE" \
+            >/dev/null 2>&1
+
+          PRIVATE_KEY_B64="$(
+            base64 -w 0 "$PRIVATE_KEY_FILE"
+          )"
+
+          PUBLIC_KEY_B64="$(
+            base64 -w 0 "$PUBLIC_KEY_FILE"
+          )"
+
+          {
+            echo 'APP_DB_PASSWORD<<EOF_DB'
+            openssl rand -hex 24
+            echo 'EOF_DB'
+
+            echo 'JWT_KID<<EOF_KID'
+            printf '%s\n' "hw32-${{ github.run_id }}"
+            echo 'EOF_KID'
+
+            echo 'JWT_PRIVATE_KEY<<EOF_PRIVATE'
+            printf '%s\n' "$PRIVATE_KEY_B64"
+            echo 'EOF_PRIVATE'
+
+            echo 'JWT_PUBLIC_KEY<<EOF_PUBLIC'
+            printf '%s\n' "$PUBLIC_KEY_B64"
+            echo 'EOF_PUBLIC'
+
+            echo 'REFRESH_TOKEN_PEPPER<<EOF_PEPPER'
+            openssl rand -hex 32
+            echo 'EOF_PEPPER'
+          } >> "$GITHUB_ENV"
+
+          rm -f \
+            "$PRIVATE_KEY_FILE" \
+            "$PUBLIC_KEY_FILE"
+
+      - name: Create kind cluster and load digest
+        env:
+          IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
+        run: npm run cluster:up
+
+      - name: Pulumi preview
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scripts/with-secrets.sh \
+            dev \
+            bash scripts/hw32/pulumi-preview.sh \
+            > evidence/hw32/plan.json
+
+      - name: Cost gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COST_GATE_BYPASS=0
+
+          if jq -e \
+            '.pull_request.labels[]?.name == "cost-approved"' \
+            "$GITHUB_EVENT_PATH" \
+            >/dev/null; then
+            COST_GATE_BYPASS=1
+          fi
+
+          PLAN_JSON=evidence/hw32/plan.json \
+          COST_BUDGET_USD=10 \
+          COST_GATE_BYPASS="$COST_GATE_BYPASS" \
+            npm run gate:cost
+
+      - name: Verify GitHub OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              https://token.actions.githubusercontent.com/.well-known/openid-configuration
+          )"
+
+          JWKS_URI="$(
+            printf '%s' "$CONFIG" \
+              | jq -r '.jwks_uri'
+          )"
+
+          TOKEN_RESPONSE="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com"
+          )"
+
+          TOKEN="$(
+            printf '%s' "$TOKEN_RESPONSE" \
+              | jq -r '.value'
+          )"
+
+          OIDC_TOKEN="$TOKEN" \
+          OIDC_JWKS_URI="$JWKS_URI" \
+          OIDC_POLICY_FILE=oidc/policy.json \
+            node scripts/hw32/oidc-gate.mjs \
+            | tee evidence/hw32/oidc.txt
+
+      - name: Pulumi up
+        env:
+          IMAGE_NAME: ${{ env.DEPLOY_IMAGE }}
+          REV: ${{ env.BUILT_DIGEST }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scripts/with-secrets.sh \
+            dev \
+            bash scripts/hw32/pulumi-up.sh
+
+      - name: Capture deployment manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl \
+            -n marketplace-hw28 \
+            get deployment \
+            marketplace-deployment \
+            -o json \
+            > evidence/hw32/deployment.json
+
+      - name: Zero-failure rollout gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MIN_REQUESTS=2000 \
+          IMAGE_NAME="$DEPLOY_IMAGE" \
+          EVIDENCE_FILE=evidence/hw32/rollout-http-codes.txt \
+            npm run demo:rollout \
+            | tee evidence/hw32/rollout.txt
+
+      - name: Capture deployment after rollout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl \
+            -n marketplace-hw28 \
+            get deployment \
+            marketplace-deployment \
+            -o json \
+            > evidence/hw32/deployment.json
+
+      - name: Build evidence contract
+        if: always()
+        env:
+          EVIDENCE_RUN_ID: ${{ github.run_id }}
+          EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVIDENCE_IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+          EVIDENCE_BUILT_DIGEST: ${{ needs.build.outputs.digest }}
+        run: node scripts/hw32/collect-evidence.mjs
+
+      - name: Enforce image scan gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f evidence/hw32/gate-scan-exit.txt ]; then
+            echo "scan gate did not run" >&2
+            exit 1
+          fi
+
+          STATUS="$(
+            cat evidence/hw32/gate-scan-exit.txt
+          )"
+
+          test "$STATUS" -eq 0
+
+      - name: Upload pipeline evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pipeline-evidence
+          path: |
+            evidence/hw32/evidence.txt
+            evidence/hw32/deployment.json
+            evidence/hw32/plan.json
+            evidence/hw32/rollout.txt
+            evidence/hw32/build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Destroy kind cluster
+        if: always()
+        run: npm run cluster:down

@@ -2,151 +2,180 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")/.."
+  pwd
+)"
 
-NAMESPACE="${NAMESPACE:-marketplace-hw28}"
-DEPLOYMENT="${DEPLOYMENT:-marketplace-deployment}"
-TARGET_URL="${TARGET_URL:-http://127.0.0.1:30080/healthz}"
+NAMESPACE="${ROLLOUT_NAMESPACE:-marketplace-hw28}"
+DEPLOYMENT="${ROLLOUT_DEPLOYMENT:-marketplace-deployment}"
+SERVICE="${ROLLOUT_SERVICE:-marketplace-service}"
 
 MIN_REQUESTS="${MIN_REQUESTS:-5000}"
-CONCURRENCY="${CONCURRENCY:-8}"
-PULUMI_TIMEOUT_SECONDS="${PULUMI_TIMEOUT_SECONDS:-180}"
+LOAD_SECONDS="${ROLLOUT_LOAD_SECONDS:-35}"
+LOAD_CONCURRENCY="${ROLLOUT_LOAD_CONCURRENCY:-25}"
 
-EVIDENCE_FILE="${EVIDENCE_FILE:-/tmp/hw28-rollout-http-codes.txt}"
+EVIDENCE_FILE="${EVIDENCE_FILE:-$ROOT/evidence/rollout-http-codes.txt}"
 
-TMP_DIR="$(mktemp -d)"
+LOAD_POD="rollout-load-$RANDOM"
+SERVICE_URL="http://${SERVICE}.${NAMESPACE}.svc.cluster.local:3000/healthz"
 
-STOP_FILE="$TMP_DIR/stop"
-PULUMI_LOG="$TMP_DIR/pulumi.log"
-PULUMI_STATUS_FILE="$TMP_DIR/pulumi-status"
-
-LOAD_PID=""
-PULUMI_PID=""
-PULUMI_ACTIVE=0
-
-cancel_pulumi_update() {
-  (
-    cd "$ROOT/infra"
-
-    npx pulumi cancel \
-      --yes \
-      >/dev/null 2>&1 ||
-      true
-  )
-}
+STARTED_AT="$(date +%s)"
 
 cleanup() {
-  if [[ -n "${LOAD_PID:-}" ]]; then
-    kill "$LOAD_PID" \
-      >/dev/null 2>&1 ||
-      true
-
-    wait "$LOAD_PID" \
-      >/dev/null 2>&1 ||
-      true
-  fi
-
-  if [[ "$PULUMI_ACTIVE" -eq 1 ]]; then
-    if [[ -n "${PULUMI_PID:-}" ]]; then
-      kill "$PULUMI_PID" \
-        >/dev/null 2>&1 ||
-        true
-
-      wait "$PULUMI_PID" \
-        >/dev/null 2>&1 ||
-        true
-    fi
-
-    cancel_pulumi_update
-  fi
-
-  rm -rf "$TMP_DIR"
+  kubectl \
+    -n "$NAMESPACE" \
+    delete pod "$LOAD_POD" \
+    --ignore-not-found \
+    --wait=false \
+    >/dev/null 2>&1 \
+    || true
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
-cd "$ROOT"
+mkdir -p "$(dirname "$EVIDENCE_FILE")"
 
-if ! kubectl \
+: > "$EVIDENCE_FILE"
+
+if ! [[ "$MIN_REQUESTS" =~ ^[0-9]+$ ]]; then
+  echo "MIN_REQUESTS must be a non-negative integer" >&2
+  exit 1
+fi
+
+if ! [[ "$LOAD_SECONDS" =~ ^[0-9]+$ ]] || [ "$LOAD_SECONDS" -le 0 ]; then
+  echo "ROLLOUT_LOAD_SECONDS must be a positive integer" >&2
+  exit 1
+fi
+
+if ! [[ "$LOAD_CONCURRENCY" =~ ^[0-9]+$ ]] || [ "$LOAD_CONCURRENCY" -le 0 ]; then
+  echo "ROLLOUT_LOAD_CONCURRENCY must be a positive integer" >&2
+  exit 1
+fi
+
+echo "Checking current deployment readiness"
+
+kubectl \
   -n "$NAMESPACE" \
-  get deployment "$DEPLOYMENT" \
-  >/dev/null 2>&1; then
-  echo "Deployment $DEPLOYMENT not found in namespace $NAMESPACE" >&2
+  rollout status \
+  "deployment/$DEPLOYMENT" \
+  --timeout=120s
+
+READY_REPLICAS="$(
+  kubectl \
+    -n "$NAMESPACE" \
+    get deployment "$DEPLOYMENT" \
+    -o jsonpath='{.status.readyReplicas}'
+)"
+
+DESIRED_REPLICAS="$(
+  kubectl \
+    -n "$NAMESPACE" \
+    get deployment "$DEPLOYMENT" \
+    -o jsonpath='{.spec.replicas}'
+)"
+
+if [ "${READY_REPLICAS:-0}" -lt "${DESIRED_REPLICAS:-1}" ]; then
+  echo "Deployment is not fully ready before rollout" >&2
   exit 1
 fi
 
-if ! curl \
-  --fail \
-  --silent \
-  --show-error \
-  "$TARGET_URL" \
-  >/dev/null; then
-  echo "Target is not healthy before rollout: $TARGET_URL" >&2
-  exit 1
-fi
+REVISION="hw28-$(date +%s)"
 
-rm -f \
-  "$STOP_FILE" \
-  "$PULUMI_STATUS_FILE" \
-  "$EVIDENCE_FILE"
+echo "Starting rollout revision: $REVISION"
+echo "Starting in-cluster load against: $SERVICE_URL"
 
-TARGET_URL="$TARGET_URL" \
-STOP_FILE="$STOP_FILE" \
-CODE_FILE="$EVIDENCE_FILE" \
-MIN_REQUESTS="$MIN_REQUESTS" \
-CONCURRENCY="$CONCURRENCY" \
-node "$ROOT/demo/rollout-load.mjs" &
+LOAD_SCRIPT="$(
+  cat <<'NODE'
+const url = process.env.TARGET_URL;
+const durationSeconds = Number(process.env.LOAD_SECONDS);
+const concurrency = Number(process.env.LOAD_CONCURRENCY);
 
-LOAD_PID="$!"
+if (!url) {
+  throw new Error('TARGET_URL is required');
+}
 
-sleep 1
+if (!Number.isInteger(durationSeconds) || durationSeconds <= 0) {
+  throw new Error('LOAD_SECONDS must be a positive integer');
+}
 
-START_SECONDS="$(date +%s)"
-REV="hw28-$(date +%s)"
+if (!Number.isInteger(concurrency) || concurrency <= 0) {
+  throw new Error('LOAD_CONCURRENCY must be a positive integer');
+}
 
-echo "Starting rollout revision: $REV"
+const deadline = Date.now() + durationSeconds * 1000;
 
-(
-  set +e
+async function worker() {
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(2000),
+        headers: {
+          connection: 'close',
+        },
+      });
 
-  REV="$REV" \
-    npm run up \
-    > >(tee "$PULUMI_LOG") \
-    2>&1
+      process.stdout.write(`${response.status}\n`);
 
-  echo "$?" >"$PULUMI_STATUS_FILE"
-) &
+      await response.body?.cancel();
+    } catch {
+      process.stdout.write('0\n');
+    }
+  }
+}
 
-PULUMI_PID="$!"
-PULUMI_ACTIVE=1
+await Promise.all(
+  Array.from(
+    { length: concurrency },
+    () => worker(),
+  ),
+);
+NODE
+)"
 
-while kill -0 "$PULUMI_PID" >/dev/null 2>&1; do
-  NOW="$(date +%s)"
-  ELAPSED=$((NOW - START_SECONDS))
+kubectl \
+  -n "$NAMESPACE" \
+  run "$LOAD_POD" \
+  --image=node:22-alpine \
+  --restart=Never \
+  --env="TARGET_URL=$SERVICE_URL" \
+  --env="LOAD_SECONDS=$LOAD_SECONDS" \
+  --env="LOAD_CONCURRENCY=$LOAD_CONCURRENCY" \
+  --command \
+  -- node \
+  --input-type=module \
+  -e "$LOAD_SCRIPT"
 
-  if [[ "$ELAPSED" -ge "$PULUMI_TIMEOUT_SECONDS" ]]; then
-    echo "Pulumi rollout timed out after ${PULUMI_TIMEOUT_SECONDS}s" >&2
+echo "Waiting for load pod to start"
 
-    kill "$PULUMI_PID" \
-      >/dev/null 2>&1 ||
-      true
+for _ in $(seq 1 60); do
+  PHASE="$(
+    kubectl \
+      -n "$NAMESPACE" \
+      get pod "$LOAD_POD" \
+      -o jsonpath='{.status.phase}' \
+      2>/dev/null \
+      || true
+  )"
 
-    wait "$PULUMI_PID" \
-      >/dev/null 2>&1 ||
-      true
+  if [ "$PHASE" = "Running" ] || [ "$PHASE" = "Succeeded" ]; then
+    break
+  fi
 
-    cancel_pulumi_update
+  if [ "$PHASE" = "Failed" ]; then
+    echo "Load pod failed before rollout" >&2
 
-    PULUMI_ACTIVE=0
-    PULUMI_PID=""
+    kubectl \
+      -n "$NAMESPACE" \
+      describe pod "$LOAD_POD" \
+      || true
 
-    touch "$STOP_FILE"
-
-    wait "$LOAD_PID" \
-      >/dev/null 2>&1 ||
-      true
-
-    LOAD_PID=""
+    kubectl \
+      -n "$NAMESPACE" \
+      logs "$LOAD_POD" \
+      || true
 
     exit 1
   fi
@@ -154,53 +183,96 @@ while kill -0 "$PULUMI_PID" >/dev/null 2>&1; do
   sleep 1
 done
 
-wait "$PULUMI_PID" \
-  >/dev/null 2>&1 ||
-  true
+PHASE="$(
+  kubectl \
+    -n "$NAMESPACE" \
+    get pod "$LOAD_POD" \
+    -o jsonpath='{.status.phase}' \
+    2>/dev/null \
+    || true
+)"
 
-PULUMI_ACTIVE=0
-PULUMI_PID=""
+if [ "$PHASE" != "Running" ] && [ "$PHASE" != "Succeeded" ]; then
+  echo "Load pod did not start in time" >&2
 
-if [[ ! -f "$PULUMI_STATUS_FILE" ]]; then
-  echo "Pulumi status was not recorded" >&2
-  cancel_pulumi_update
+  kubectl \
+    -n "$NAMESPACE" \
+    describe pod "$LOAD_POD" \
+    || true
+
   exit 1
 fi
 
-PULUMI_STATUS="$(cat "$PULUMI_STATUS_FILE")"
+sleep 2
 
-if [[ "$PULUMI_STATUS" -ne 0 ]]; then
+echo "Triggering Pulumi rollout"
+
+set +e
+
+REV="$REVISION" \
+  npm run up
+
+PULUMI_STATUS="$?"
+
+set -e
+
+if [ "$PULUMI_STATUS" -ne 0 ]; then
   echo "Pulumi rollout failed with exit code $PULUMI_STATUS" >&2
-  exit 1
+
+  kubectl \
+    -n "$NAMESPACE" \
+    get pods \
+    -o wide \
+    || true
+
+  exit "$PULUMI_STATUS"
 fi
 
-if ! kubectl \
+kubectl \
   -n "$NAMESPACE" \
   rollout status \
-  deployment/"$DEPLOYMENT" \
-  --timeout=60s; then
-  echo "Kubernetes rollout did not complete successfully" >&2
-  exit 1
-fi
+  "deployment/$DEPLOYMENT" \
+  --timeout=180s
 
-END_SECONDS="$(date +%s)"
+echo "deployment \"$DEPLOYMENT\" successfully rolled out"
 
-touch "$STOP_FILE"
+echo "Waiting for load generator to finish"
 
-wait "$LOAD_PID"
-LOAD_PID=""
+set +e
 
-if [[ ! -f "$EVIDENCE_FILE" ]]; then
-  echo "HTTP evidence file was not created" >&2
+kubectl \
+  -n "$NAMESPACE" \
+  wait \
+  --for=jsonpath='{.status.phase}'=Succeeded \
+  "pod/$LOAD_POD" \
+  --timeout="$((LOAD_SECONDS + 90))s"
+
+LOAD_WAIT_STATUS="$?"
+
+set -e
+
+kubectl \
+  -n "$NAMESPACE" \
+  logs "$LOAD_POD" \
+  > "$EVIDENCE_FILE" \
+  || true
+
+if [ "$LOAD_WAIT_STATUS" -ne 0 ]; then
+  echo "Load generator did not finish successfully" >&2
+
+  kubectl \
+    -n "$NAMESPACE" \
+    describe pod "$LOAD_POD" \
+    || true
+
   exit 1
 fi
 
 REQUESTS="$(
   awk '
-    NF {
+    /^[0-9]+$/ {
       count += 1
     }
-
     END {
       print count + 0
     }
@@ -209,10 +281,9 @@ REQUESTS="$(
 
 OK="$(
   awk '
-    $1 == 200 {
+    /^2[0-9][0-9]$/ {
       count += 1
     }
-
     END {
       print count + 0
     }
@@ -221,17 +292,17 @@ OK="$(
 
 FAILED="$(
   awk '
-    $1 != 200 {
+    /^[0-9]+$/ && $0 !~ /^2[0-9][0-9]$/ {
       count += 1
     }
-
     END {
       print count + 0
     }
   ' "$EVIDENCE_FILE"
 )"
 
-ROLLOUT_SECONDS=$((END_SECONDS - START_SECONDS))
+FINISHED_AT="$(date +%s)"
+ROLLOUT_SECONDS="$((FINISHED_AT - STARTED_AT))"
 
 echo "profile=correct"
 echo "requests=$REQUESTS"
@@ -239,28 +310,26 @@ echo "ok=$OK"
 echo "failed=$FAILED"
 echo "rollout-seconds=$ROLLOUT_SECONDS"
 
-if [[ "$REQUESTS" -lt "$MIN_REQUESTS" ]]; then
-  echo "Expected at least $MIN_REQUESTS requests" >&2
+if [ "$REQUESTS" -lt "$MIN_REQUESTS" ]; then
+  echo "Minimum request requirement failed" >&2
   exit 1
 fi
 
-if [[ "$FAILED" -ne 0 ]]; then
+if [ "$FAILED" -ne 0 ]; then
   echo "Zero-downtime requirement failed" >&2
+
   echo "Failed HTTP codes:" >&2
 
   awk '
-    $1 != 200 {
-      print
+    /^[0-9]+$/ && $0 !~ /^2[0-9][0-9]$/ {
+      counts[$0] += 1
     }
-  ' "$EVIDENCE_FILE" \
-    | sort \
-    | uniq -c \
-    >&2
+    END {
+      for (code in counts) {
+        print code, counts[code]
+      }
+    }
+  ' "$EVIDENCE_FILE" >&2
 
-  exit 1
-fi
-
-if [[ "$OK" -ne "$REQUESTS" ]]; then
-  echo "Successful response count does not match total requests" >&2
   exit 1
 fi
