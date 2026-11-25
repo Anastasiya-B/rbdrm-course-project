@@ -40,6 +40,9 @@ jobs:
       - name: ESLint
         run: npm run lint
 
+      - name: Unit tests
+        run: env -u CODEX_CI npm run test:unit
+
       - name: Prepare OpenAPI baseline
         shell: bash
         run: |

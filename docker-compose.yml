@@ -141,7 +141,7 @@ services:
   db-init:
     build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
     command: ['dist/init.js']
-    environment: &app-env
+    environment: &base-app-env
       NODE_ENV: production
       PORT: '3000'
       DB_URL: postgresql://marketplace:marketplace_password@postgres:5432/marketplace
@@ -155,10 +155,6 @@ services:
       REDIS_QUEUE_URL: redis://redis-queue:6379
       PAYMENT_WEBHOOK_SECRET: local-compose-webhook-secret
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-1000}
-      JWT_KID: ${JWT_KID:?run scripts/init-local-compose-secrets.sh first}
-      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?run scripts/init-local-compose-secrets.sh first}
-      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?run scripts/init-local-compose-secrets.sh first}
-      REFRESH_TOKEN_PEPPER: ${REFRESH_TOKEN_PEPPER:?run scripts/init-local-compose-secrets.sh first}
     depends_on:
       postgres: { condition: service_healthy }
     restart: 'no'
@@ -166,7 +162,12 @@ services:
     build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
     command: ['dist/main.js']
     ports: ['${API_PORT:-3300}:3000']
-    environment: *app-env
+    environment:
+      <<: *base-app-env
+      JWT_KID: ${JWT_KID:-}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-}
+      REFRESH_TOKEN_PEPPER: ${REFRESH_TOKEN_PEPPER:-}
     depends_on:
       db-init: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
@@ -181,14 +182,14 @@ services:
   outbox-relay:
     build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
     command: ['dist/outbox/run-relay.js']
-    environment: *app-env
+    environment: *base-app-env
     depends_on:
       db-init: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }
   payment-worker:
     build: { context: ., dockerfile: docker/Dockerfile, target: runtime }
     command: ['dist/payments/run-workers.js']
-    environment: *app-env
+    environment: *base-app-env
     depends_on:
       db-init: { condition: service_completed_successfully }
       rabbitmq: { condition: service_healthy }

@@ -23,6 +23,7 @@
     "demo:retry": "bash scripts/with-secrets.sh dev node dist/demo-retry.js",
     "report": "bash scripts/with-secrets.sh dev node dist/report.js",
     "test:integration": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand test/integration",
+    "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand test/unit",
     "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand test/e2e",
     "test:contract": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand test/contract/consumer",
     "verify:provider": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand test/contract/provider",
@@ -70,7 +71,7 @@
     "demo:gates": "node scripts/hw32/demo-gates.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
-    "gate:contract": "bash scripts/hw32/contract-gate.sh"
+    "gate:contract": "bash scripts/hw32/contract-gate.sh ${OPENAPI_BASELINE:-fixtures/hw32/contract/base.yaml} ${OPENAPI_CANDIDATE:-fixtures/hw32/contract/valid.yaml}"
   },
   "repository": {
     "type": "git",
