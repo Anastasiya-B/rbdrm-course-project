@@ -1,0 +1,30 @@
+services:
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.41.1
+    container_name: marketplace-otel-lgtm
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    ports:
+      - '22900:3000'
+      - '22918:4318'
+      - '22904:3200'
+    volumes:
+      - ./grafana/provisioning/datasources/marketplace.yml:/etc/grafana/provisioning/datasources/marketplace.yml:ro
+      - ./grafana/provisioning/dashboards/marketplace.yml:/etc/grafana/provisioning/dashboards/marketplace.yml:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: marketplace-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - '22901:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    restart: unless-stopped
