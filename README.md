@@ -1,1116 +1,258 @@
-# HW28–HW31 — Kubernetes, Observability & AWS Infrastructure
+# NestJS Marketplace course project
 
-NestJS application deployed to a local `kind` cluster with Pulumi, rolling updates, readiness/liveness probes, PDB, HPA, runtime secrets, distroless Docker image, vulnerability scanning, structured logging, RED metrics, OpenTelemetry tracing and a provisioned Grafana dashboard.
+Final submission for the Marketplace API course project on the course-project branch. The domain is a marketplace where sellers publish products, buyers place authenticated orders, inventory is reserved transactionally, and a simulated payment provider completes orders asynchronously.
 
-## Requirements
+The implementation is local-first: Docker Compose runs PostgreSQL, PgBouncer, RabbitMQ, Redis cache, Redis queue, MinIO, the API, an outbox relay, and a payment worker. AWS infrastructure is not provisioned by this submission.
 
-- Docker
-- Node.js 22+
-- `kubectl`
-- `kind`
-- Pulumi CLI or `npx pulumi`
+## Project overview
 
-Install dependencies:
+The main business flow is:
 
-```bash
-npm ci
-npm --prefix infra ci
+1. Login returns an RS256 access token and refresh token.
+2. A buyer sends an authenticated order with an Idempotency-Key.
+3. PostgreSQL atomically reserves inventory and writes the order plus outbox event.
+4. The relay publishes the event with RabbitMQ publisher confirmation.
+5. The payment worker applies the simulated payment once.
+6. The API receives the status event over Redis pub/sub and exposes it through Socket.IO and authenticated SSE.
+
+Limitations: payment is simulated; MinIO replaces S3 locally; SSE replay is bounded in memory; deployment evidence is local/previous-workflow evidence rather than a permanent public service.
+
+## Domain validation
+
+The original HW0 template was not found in the repository or reachable Git history. This is honestly labeled as a repository-derived validation table.
+
+| Property | Applicable marketplace requirement | Implementation |
+|---|---|---|
+| Identity | Login is required for protected operations | src/auth and AuthGuard |
+| Authorization | Owners and roles control resource access | roles.guard.ts and ownership checks |
+| Inventory | Concurrent orders cannot oversell stock | transactional reservation in orders.service.ts |
+| Money | Payment amount cannot differ from frozen order total | payment.service.ts webhook checks |
+| Idempotency | Repeated checkout does not create another order/effect | idempotency_keys and payment_operations |
+| Async processing | Payment can finish outside the request process | outbox, RabbitMQ, payment worker |
+| File delivery | Private uploads bypass API byte transfer | src/files and src/cdn |
+
+All seven rows are applicable; at least six are implemented and evidenced.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  Client[Client] --> API[NestJS API]
+  API --> Auth[JWT and RBAC]
+  API --> Pool[PgBouncer]
+  Pool --> DB[(PostgreSQL)]
+  API --> Cache[(Redis cache)]
+  API --> PubSub[(Redis pub/sub)]
+  API --> Store[(Private MinIO)]
+  DB --> Outbox[Transactional outbox]
+  Outbox --> Relay[Outbox relay]
+  Relay --> MQ[(RabbitMQ)]
+  MQ --> Worker[Payment worker]
+  Worker --> DB
+  Worker --> PubSub
+  API --> Obs[Logs metrics traces]
+  Store --> Edge[Local edge cache]
 ```
 
-## Environment
-
-Commands requiring secrets use `scripts/with-secrets.sh`.
-
-For grading without Infisical:
-
-```bash
-export SKIP_VAULT=1
-export APP_DB_PASSWORD="$(cat secrets/db_password)"
-export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
-export PULUMI_CONFIG_PASSPHRASE="hw28-grading"
+```mermaid
+sequenceDiagram
+  participant B as Buyer
+  participant A as API
+  participant P as PgBouncer
+  participant DB as PostgreSQL
+  participant R as Outbox relay
+  participant Q as RabbitMQ
+  participant W as Payment worker
+  participant X as Redis pub/sub
+  B->>A: POST /orders with JWT and Idempotency-Key
+  A->>P: transaction connection
+  P->>DB: reserve stock, order, outbox
+  DB-->>A: commit
+  R->>DB: claim unpublished event
+  R->>Q: publish and await confirm
+  Q->>W: durable delivery
+  W->>DB: deduplicated payment effect
+  W->>X: order status event
+  X-->>A: cross-process notification
+  A-->>B: paid retrieval, Socket.IO, or SSE
 ```
 
-Required runtime secrets:
+Allowed order states are created, paid, shipped, completed, and cancelled. The normal payment lifecycle is created -> paid -> shipped -> completed. The protected cancellation lifecycle is created -> cancelled; cancellation restores reserved stock. The code rejects other transitions.
 
-| Variable               | Source  |
-| ---------------------- | ------- |
-| `APP_DB_PASSWORD`      | сховище |
-| `JWT_KID`              | сховище |
-| `JWT_PRIVATE_KEY`      | сховище |
-| `JWT_PUBLIC_KEY`       | сховище |
-| `REFRESH_TOKEN_PEPPER` | сховище |
+Controllers validate transport input and invoke guarded operations. Services contain business transactions and state changes. Repositories and database-access classes contain SQL. Relay and payment worker are independent processes.
 
-Example local auth values:
+### Architectural trade-offs
 
-```bash
-export JWT_KID="hw28-local-key"
+- Selected PostgreSQL row locking because inventory correctness is central; a distributed inventory service would add operational cost and another consistency boundary.
+- Selected a transactional outbox because direct broker publication could lose events; the cost is relay and duplicate handling.
+- Selected RabbitMQ because durable queues and acknowledgements survive process failure; the cost is broker operation.
+- Selected Redis because cache, session, rate limit, and pub/sub operations need low latency; Redis is not the source of truth.
+- Selected MinIO and presigned URLs because file bytes bypass the API; S3 would be the production cloud alternative.
+- Selected an in-memory SSE buffer because the course permits it; durable replay would require an event store.
 
-openssl genpkey \
-  -algorithm RSA \
-  -pkeyopt rsa_keygen_bits:2048 \
-  -out /tmp/hw28-private.pem
+### Architecture decision log
 
-openssl rsa \
-  -pubout \
-  -in /tmp/hw28-private.pem \
-  -out /tmp/hw28-public.pem
+| Decision | Reason | Alternative and trade-off | Implementation/history |
+|---|---|---|---|
+| Use PostgreSQL transactions for checkout | Prevent overselling and orphan state | Distributed inventory adds consistency and operations cost | src/orders/orders.service.ts; commits 337b97d and ff123d2 |
+| Add an outbox | Commit business state and event intent together | Direct publish can lose events after commit | src/outbox; commit d59ad72 |
+| Add RabbitMQ worker payment | Keep payment outside request lifecycle | In-process work is lost on restart | src/rabbitmq and src/payments; commit 0cf9311 |
+| Add JWT refresh rotation and RBAC | Bound access and authorize ownership/roles | Long-lived opaque sessions simplify clients but weaken controls | src/auth; commit 68527f5 |
+| Add Redis cross-process events | Deliver worker status to API processes | In-memory events do not cross processes | src/orders/order-events.service.ts; commit 8f0582f |
+| Add Compose health dependencies | Make local startup reproducible | Manual startup is less repeatable | docker-compose.yml; commit b271718 |
+| Add CI contract/security gates | Reject incompatible APIs and unsafe images | Manual review is less reproducible | .github/workflows and fixtures; commit bff3413 |
 
-export JWT_PRIVATE_KEY="$(openssl base64 -A -in /tmp/hw28-private.pem)"
-export JWT_PUBLIC_KEY="$(openssl base64 -A -in /tmp/hw28-public.pem)"
-export REFRESH_TOKEN_PEPPER="$(openssl rand -hex 32)"
-```
+## Local startup
 
-No new tracked `.env` file is required.
+Prerequisites: Git, Node.js 22+, npm, Docker Desktop with Compose, and OpenSSL.
 
-## Production image
+    git clone --branch course-project https://github.com/Anastasiya-B/rbdrm-course-project.git
+    cd rbdrm-course-project
+    npm ci
+    bash scripts/init-local-compose-secrets.sh .env.compose.local
+    API_PORT=3300 docker compose --env-file .env.compose.local up -d --build --wait
+    API_URL=http://127.0.0.1:3300 npm run smoke:compose
 
-Build:
+The API is port 3300 on the host and 3000 in the container. API_PORT, MINIO_API_PORT, MINIO_CONSOLE_PORT, and PACT_PORT are configurable. Check liveness and readiness with:
 
-```bash
-npm run image:build
-```
+    curl -fsS http://127.0.0.1:3300/healthz
+    curl -fsS http://127.0.0.1:3300/readyz
 
-The Dockerfile uses multiple stages and a distroless non-root runtime.
+Stop safely with docker compose --env-file .env.compose.local stop. Do not use down -v for grading. Generated secret files are ignored and must not be committed.
 
-BuildKit receives `.npm_token` only through a secret mount. `.npm_token` is ignored by Git.
+## API
 
-Verify:
+The complete contract is openapi/openapi.yaml. Main endpoints are:
 
-```bash
-npm run demo:image
-```
+- POST /auth/login, /auth/refresh, /auth/logout
+- GET/POST /products
+- POST/GET /orders, GET /orders/:id
+- PATCH /orders/:id/status
+- GET /orders/:id/events
+- POST /payments/webhook
+- POST /uploads/intent and /uploads/commit
+- GET /healthz, /readyz, /metrics
 
-Expected:
+Orders require Bearer JWT and Idempotency-Key. Pagination uses bounded cursors. Webhook signatures cover the raw body and frozen amount. Errors use application/problem+json.
 
-```text
-stages=3
-shell-inside=0
-runtime-uid=65532
-token-in-history=0
-token-in-config=0
-token-in-layers=0
-```
+### OpenAPI compatibility policy
 
-`demo:image` checks the token in image history, image config and unpacked layer contents. Compressed gzip layers are decompressed before the token search.
+The PR compatibility gate compares the actual main-branch OpenAPI baseline with this candidate using oasdiff v1.35.0 and still fails on all unapproved ERR changes. The only approved exception is recorded in scripts/hw32/contract-gate.err-ignore: the course project intentionally changed GET /orders, POST /orders, and GET /orders/{id} from anonymous access to mandatory bearerAuth to match the implemented JWT authorization requirements. Each rule matches the exact HTTP method, path, and oasdiff security-change description. It does not ignore the security check globally, other operations, or unrelated breaking changes.
 
-## Vulnerability scan
+The gate is scripts/hw32/contract-gate.sh. It mounts the repository read-only, uses --fail-on ERR, and passes the exception file with --err-ignore. Positive and negative results are recorded in evidence/phase6.2-verification.md.
 
-```bash
-npm run scan
-```
+## Configuration and secrets
 
-Current measured result:
+| Variable | Required | Process | Purpose/source |
+|---|---:|---|---|
+| PORT | No | API | HTTP port |
+| DB_URL or DB_HOST/PORT/USER/PASSWORD/NAME | Yes | API/workers | PostgreSQL |
+| DB_PASSWORD_FILE | Local option | scripts | Secret-file path |
+| JWT_KID, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY | Yes | API | Generated local RS256 keys |
+| REFRESH_TOKEN_PEPPER | Yes | API | Refresh hashing |
+| BROKER_URL | Yes | relay/worker | RabbitMQ |
+| REDIS_URL, REDIS_QUEUE_URL | Yes | API/worker | Cache/pub/sub and queue |
+| PAYMENT_WEBHOOK_SECRET | Yes | API/worker | HMAC webhook |
+| STORAGE_ENDPOINT, STORAGE_ACCESS_KEY, STORAGE_SECRET_KEY, STORAGE_BUCKET | File flows | API/demo | MinIO/S3-compatible storage |
 
-```text
-image=rbdrm-marketplace:hw28
-severity=HIGH,CRITICAL
-found=9
-max-allowed=10
-gate=pass
-```
+The env schema is in src/config/env.schema.ts. Missing required variables fail startup and the schema reports variable names. Local keys are generated by scripts/init-local-compose-secrets.sh; rotate.sh is the available local rotation procedure. Real secret values are not tracked or printed.
 
-Gate checks:
+## Database, cache, and files
 
-```bash
-SCAN_MAX=-1 npm run scan
-```
+Migrations are in src/migrations. Initialization and seed are idempotent. Inventory and outbox writes share a transaction.
 
-Expected: non-zero exit code and `gate=fail`.
+Measured query evidence: EXPLAIN ANALYZE BUFFERS used an index scan, 3 shared buffers, and 0.112 ms execution. The N+1 demo measured N=5: 14 to 1 queries and N=10: 25 to 1; optimized count remained 1. PgBouncer reported pool_mode=transaction.
 
-```bash
-SCAN_MAX=99999 npm run scan
-```
+The fresh restore is documented in RESTORE-DRILL.md: source/restored checksum 32|8880400, backup size 48K, RTO 6 seconds, RPO up to 24 hours, MATCH and exit 0.
 
-Expected: exit code `0` and `gate=pass`.
+Redis cache and queue are separate. The cache uses allkeys-lru; the queue uses append-only storage and noeviction. Sessions use TTL renewal. File flows use private MinIO objects, presigned URLs, multipart recovery, and a local edge-cache implementation. Demos that flush or delete state must use isolated Compose projects and dedicated volumes/databases; never run them against a shared grading database without reading their cleanup code.
 
-CI workflow:
+## Security and OWASP Top 10:2025
 
-```text
-.github/workflows/hw28-security.yml
-```
+JWT verification allows RS256 only, validates claims, and uses bounded lifetimes. Logout deny-lists access tokens and revokes refresh tokens. Refresh reuse revokes its family. Guards distinguish anonymous 401 from foreign/incorrect-role 403. Webhooks use HMAC and frozen totals. Rate limiting returns 429 and Retry-After.
 
-It builds the image, verifies the image contract and runs the vulnerability scan.
+The category names below follow the official OWASP Top 10:2025 list.
 
-## Kubernetes
+| Category | Applicable? | Implemented mitigation and source | Limitation |
+|---|---|---|---|
+| A01 Broken Access Control | Yes | AuthGuard, RolesGuard, owner checks in src/orders and src/files | Full demo matrix is partly deferred |
+| A02 Security Misconfiguration | Yes | env.schema.ts, Compose health checks, non-root image | Deployment configuration still needs external review |
+| A03 Software Supply Chain Failures | Yes | package-lock.json, npm ci, BuildKit secret, Trivy gate | 9 HIGH/CRITICAL findings remain |
+| A04 Cryptographic Failures | Yes | RS256 JWT, HMAC webhook, hashed refresh tokens | Local secret rotation only |
+| A05 Injection | Yes | Zod validation and parameterized SQL in services/repositories | No third-party penetration test |
+| A06 Insecure Design | Yes | Outbox, idempotency, frozen totals, transactional reservation | SSE replay is in-memory |
+| A07 Authentication Failures | Yes | JWT allowlist, bounded TTL, logout denylist, refresh family revocation | Full cleanup demo not rerun on shared data |
+| A08 Software or Data Integrity Failures | Yes | signed webhooks, publisher confirms, deduplication tables, contract gate | External artifact signing is not configured |
+| A09 Security Logging and Alerting Failures | Yes | redaction, request context, RED metrics, OpenTelemetry | Complete final Grafana transcript is missing |
+| A10 Mishandling of Exceptional Conditions | Yes | problem+json filter, rollback, retries, DLQ, readiness lifecycle | SIGTERM readiness transcript is missing |
 
-Local cluster:
+## Testing, evidence, and troubleshooting
 
-```bash
-npm run cluster:up
-```
+Run the complete local gate:
 
-The image is loaded into `kind` after build.
+    npm run build
+    npm run typecheck
+    npm run lint
+    npm run architecture
+    npm run check:env
+    npm run test:unit
+    npm run test:integration
+    npm run test:integration
+    npm run test:e2e
+    npm run test:contract
+    npm run verify:provider
+    git diff --check
 
-Local platform:
+Recorded final results: each integration run passed 3 suites and 7 tests; E2E passed 1 suite and 9 tests; 2 independent unit tests are declared and the command exited 0; 1 consumer Pact and 1 provider Pact test are declared and both commands exited 0. Jest left E2E open handles after reporting all 9 tests passed, so the process was stopped after the complete summary.
 
-```text
-Docker Desktop + kind on macOS
-```
+Positive and negative contract checks:
 
-Check Docker/kind memory:
+    npm run gate:contract
+    OPENAPI_CANDIDATE=fixtures/hw32/contract/invalid.yaml npm run gate:contract
 
-```bash
-docker info --format '{{.MemTotal}}' \
-  | awk '{printf "%.2f GiB\n", $1/1024/1024/1024}'
-```
+The valid fixture passes; invalid and breaking fixtures are expected to fail the compatibility gate. Docker Desktop is required for Testcontainers. The prior CODEX_CI environment issue is handled by workflow commands using env -u CODEX_CI. If Docker uses a non-default socket, configure Docker Desktop or export a local DOCKER_HOST in the shell; never commit a developer-specific absolute socket path.
 
-Docker/kind available memory on the development machine:
+Additional verification commands:
 
-```text
-7.65 GiB
-```
+    npm run verify:compose-concurrency
+    BASE_URL=http://127.0.0.1:3300 npm run demo:realtime
+    npm run demo:logs
+    npm run demo:metrics
+    npm run demo:trace
+    DATABASE_URL=local bash scripts/restore-drill.sh
 
-Deploy with Pulumi:
+The last three observability demos and cleanup-heavy homework demos require their documented secret environment and isolated infrastructure. Their status is recorded in evidence/phase6.2-verification.md.
 
-```bash
-npm run up
-```
+## Docker, deployment, CI/CD, and observability
 
-Pulumi creates:
+The production image is multi-stage, shell-free, distroless, non-root UID 65532, and uses BuildKit secrets. npm run image:build and npm run scan were successful; Trivy reported 9 HIGH/CRITICAL findings against max-allowed 10.
 
-- Namespace
-- Secret
-- Deployment
-- Service
-- PodDisruptionBudget
-- HorizontalPodAutoscaler
+The final Compose smoke result was health 200, ready 200, order paid, independent retrieval successful, and idempotent replay status 201. The final realtime result was ownerJoin=true, foreignJoinRejected=true, invalidJwtRejected=true, ownerReceived=true, foreignReceived=0, and sseReplayObserved=true. Runtime observability verification now targets the current Compose API at `http://127.0.0.1:3300`: metrics passed with 40 successful and 10 failing requests, bounded series 3→3, and no histogram overflow; structured logs passed with 3 layers and 8 isolated concurrent trace contexts; tracing passed with 12 spans, zero orphan spans, and trace/header/log correlation; Prometheus and all three Grafana RED queries returned data. Prometheus was corrected to scrape port 3300, and the API exports OTLP to the existing LGTM container.
 
-Main configuration:
+Deployment code is under infra, k8s, scripts, and .github/workflows. The final retained deployment evidence is [GitHub Actions run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955), which validates commit `c5aa8bf`, not the subsequent Compose and Prometheus configuration changes. Its six retained artifacts are in [evidence/ci-run-45640058955](evidence/ci-run-45640058955). The run proves one image build, `digest-equal=true`, a real rolling update, 26,991 HTTP responses with 26,991 successful and 0 failed responses in 43 seconds, three ready and updated replicas, `maxUnavailable=0`, `maxSurge=1`, OIDC signature verification, zero secrets in the rendered manifest, and a passing scan gate. Rollout traffic targeted the Kubernetes Service health endpoint `http://marketplace-service.marketplace-hw28.svc.cluster.local:3000/healthz`, not a business endpoint. The evidence files contain only secret references and Pulumi's `[secret]` placeholder; no secret values or tokens are retained.
 
-```text
-replicas=3
-maxUnavailable=0
-maxSurge=1
-terminationGracePeriodSeconds=15
-readiness=/readyz
-liveness=/healthz
-PDB minAvailable=2
-HPA minReplicas=2
-HPA maxReplicas=5
-HPA CPU target=70%
-```
+## Reviewer runbook
 
-### Deployment replicas and HPA ownership
-
-The Deployment starts with `replicas=3` so a fresh installation immediately satisfies the availability requirements.
-
-After deployment, HPA owns runtime scaling between `2` and `5` replicas.
-
-`spec.replicas` therefore has two potential owners: Pulumi and the HPA controller. Pulumi ignores subsequent changes to `spec.replicas` after initial creation so it does not fight HPA scaling decisions.
-
-Check:
-
-```bash
-kubectl -n marketplace-hw28 get pods
-kubectl -n marketplace-hw28 get deploy marketplace-deployment
-kubectl -n marketplace-hw28 get svc marketplace-service
-kubectl -n marketplace-hw28 get pdb marketplace-pdb
-kubectl -n marketplace-hw28 get hpa marketplace-hpa
-```
-
-On local `kind` without Metrics Server, HPA CPU may show:
-
-```text
-cpu: <unknown>/70%
-```
-
-This is expected.
-
-Health endpoints:
-
-```bash
-curl http://127.0.0.1:30080/healthz
-curl http://127.0.0.1:30080/readyz
-```
-
-Expected:
-
-```json
-{ "status": "alive" }
-```
-
-```json
-{ "status": "ready" }
-```
-
-## Graceful shutdown
-
-On `SIGTERM` the application:
-
-```text
-mark not ready
-→ wait 5 seconds for draining
-→ close HTTP server
-→ exit
-```
-
-Kubernetes termination grace period is `15s`, which is longer than the `5s` drain period.
-
-## Zero-downtime rollout
-
-Run:
-
-```bash
-npm run demo:rollout
-```
-
-The demo performs a real Pulumi revision change while HTTP traffic is running.
-
-Each HTTP response code is written to a temporary evidence file, one code per line. `requests`, `ok` and `failed` are calculated from that file rather than only from in-memory counters.
-
-Example evidence:
-
-```text
-200
-200
-200
-200
-```
-
-Transport errors are recorded as:
-
-```text
-0
-```
-
-Measured result:
-
-```text
-profile=correct
-requests=50809
-ok=50809
-failed=0
-rollout-seconds=61
-```
-
-Acceptance requirement:
-
-```text
-requests >= 5000
-failed=0
-```
-
-## PodDisruptionBudget
-
-Run:
-
-```bash
-npm run demo:pdb
-```
-
-Expected measured output:
-
-```text
-healthy=3
-minAvailable=2
-evict-1=201
-evict-2=429
-```
-
-The first request uses the Kubernetes Eviction API successfully. The second is rejected by the PDB because evicting another pod would violate `minAvailable=2`.
-
-## Runtime secrets
-
-Pulumi creates a Kubernetes `Secret`.
-
-Sensitive values are referenced from the Deployment through `secretKeyRef`.
-
-`APP_DB_PASSWORD` is also mounted as:
-
-```text
-/run/secrets/db_password
-```
-
-for the existing `DB_PASSWORD_FILE` configuration.
-
-Secret values are not placed directly in the Deployment environment specification.
-
-In production, an External Secrets Operator or Secrets Store CSI Driver would normally synchronize secrets from an external secret manager.
-
-## Pulumi backend
-
-Local file backend:
-
-```bash
-mkdir -p .pulumi
-export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
-export PULUMI_CONFIG_PASSPHRASE="hw28-grading"
-```
-
-Pulumi commands:
-
-```bash
-npm run up
-npm run destroy
-```
-
-## Observability
-
-HW29 adds structured JSON logging, RED metrics, OpenTelemetry tracing and a provisioned Grafana dashboard.
-
-### Runtime variables
-
-| Variable                      | Purpose                       | Source                                           |
-| ----------------------------- | ----------------------------- | ------------------------------------------------ |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint for traces | `scripts/with-secrets.sh` / exported environment |
-| `PROMETHEUS_URL`              | Prometheus API endpoint       | `scripts/with-secrets.sh` / exported environment |
-| `TRACE_API_URL`               | Tempo trace API endpoint      | `scripts/with-secrets.sh` / exported environment |
-| `GRAFANA_USER`                | Grafana username              | `scripts/with-secrets.sh` / exported environment |
-| `GRAFANA_PASSWORD`            | Grafana password              | `scripts/with-secrets.sh` / exported environment |
-
-No additional HW29 `.env` file is required.
-
-### Structured logs
-
-Application request logs are emitted as JSON using Pino.
-
-The correlation identifier is the active OpenTelemetry `trace_id`, not a separately generated UUID.
-
-Request-scoped values such as `userId`, `tenant` and `idempotencyKey` are stored in `AsyncLocalStorage`.
-
-The observability request crosses at least three logged layers:
-
-- `orders.controller`
-- `orders.service`
-- `orders.repo`
-
-The same `trace_id` is preserved across all three layers.
-
-Authorization tokens and passwords are redacted before log output.
-
-Latest verified `demo:logs` result:
-
-```text
-non-json-lines=0
-layers=3
-distinct-trace-ids=1
-trace-id-matches-header=1
-burst=8
-burst-trace-ids=8
-burst-uneven=0
-secret-req-logged=1
-secret-in-logs=0
-```
-
-The demo was run three times consecutively with the same result.
-
-### RED metrics
-
-Metrics are exposed at:
-
-```text
-/metrics
-```
-
-The `route` label uses the route template, for example:
-
-```text
-/observability/orders/:id
-```
-
-rather than a raw URL containing a concrete id.
-
-#### Rate
-
-Question: how much traffic is the service receiving?
-
-```promql
-sum(rate(http_requests_total[1m]))
-```
-
-#### Errors
-
-Question: how many HTTP 5xx responses are occurring?
-
-```promql
-sum(rate(http_requests_total{status=~"5.."}[1m]))
-```
-
-#### Duration
-
-Question: how long are requests taking?
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le) (
-    rate(http_request_duration_seconds_bucket[1m])
-  )
-)
-```
-
-Histogram bucket boundaries:
-
-```text
-0.005
-0.01
-0.025
-0.05
-0.1
-0.25
-0.5
-1
-2.5
-5
-10
-```
-
-The largest finite bucket is `10` seconds.
-
-`demo:metrics` verifies bucket coverage by calculating:
-
-```text
-_count - _bucket{le="10"}
-```
-
-and requires:
-
-```text
-above-top-bucket=0
-```
-
-Latest verified result:
-
-```text
-sent-ok=40
-sent-fail=10
-counter-delta=50
-errors-delta=10
-above-top-bucket=0
-series-before=3
-series-after=3
-```
-
-The demo was run three times consecutively with the same result.
-
-### OpenTelemetry tracing
-
-Incoming W3C `traceparent` headers are continued by OpenTelemetry.
-
-The trace demo compares the same request across:
-
-1. the trace id supplied in `traceparent`;
-2. `trace_id` in the structured application log;
-3. the trace id exported to the trace backend.
-
-The demo also verifies that:
-
-- the trace contains at least two spans;
-- child spans are connected;
-- an HTTP 500 request produces a span with ERROR status.
-
-Latest verified `demo:trace` result:
-
-```text
-spans=11
-orphan-spans=0
-trace-matches-header=1
-trace-matches-log=1
-span-status-error=1
-```
-
-### Local observability stack
-
-| Component       | Address                  |
-| --------------- | ------------------------ |
-| Grafana         | `http://127.0.0.1:22900` |
-| Prometheus      | `http://127.0.0.1:22901` |
-| Tempo trace API | `http://127.0.0.1:22904` |
-| OTLP HTTP       | `http://127.0.0.1:22918` |
-
-The Grafana datasource and dashboard are provisioned from repository files.
-
-Dashboard:
-
-```text
-observability/grafana/dashboards/marketplace-observability.json
-```
-
-The dashboard contains three RED panels:
-
-- request rate;
-- HTTP 5xx error rate;
-- p95 request duration.
+1. Clone and checkout course-project using the commands in Local startup.
+2. Generate .env.compose.local and start Compose with --wait.
+3. Run API_URL=http://127.0.0.1:3300 npm run smoke:compose.
+4. Run npm run verify:compose-concurrency.
+5. Run the realtime and observability commands.
+6. Run the complete testing gate.
+7. Run the isolated restore drill.
+8. Inspect OpenAPI, evidence/phase6.2-verification.md, evidence/phase6.2-grading-matrix.md, Dockerfile, workflows, and deployment code.
 
 ## Grading
 
-Run from a fresh clone.
+The official criterion-by-criterion matrix is [evidence/phase6.2-grading-matrix.md](evidence/phase6.2-grading-matrix.md). Supporting command results are [evidence/phase6.2-verification.md](evidence/phase6.2-verification.md).
 
-### 1. Prepare local untracked files
+The matrix uses official blocks 11.1 Architecture, 11.2 Business Flow and API, 11.3 Data Storage, 11.4 Security and Validation, 11.5 Asynchronous Processing, 11.6 Docker and Deployment, and 11.7 Observability, Tests and Pipeline. It maps each subcriterion to implementation, command, invariant, evidence, status, and limitation. The conservative repository-evidence estimate is 86/95; the estimated LMS grade without defense is 14/15. These are estimates, not the final grade assigned by the evaluator.
 
-```bash
-mkdir -p secrets
-mkdir -p .pulumi
+## Known limitations
 
-printf '%s' 'hw28-grading-password' > secrets/db_password
-printf '%s' 'hw28-build-bait-token' > .npm_token
-```
-
-`secrets/`, `.npm_token` and `.pulumi/` are ignored by Git.
-
-### 2. Export grading environment
-
-```bash
-export SKIP_VAULT=1
-export APP_DB_PASSWORD="$(cat secrets/db_password)"
-export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
-export PULUMI_CONFIG_PASSPHRASE="hw28-grading"
-
-export JWT_KID="grader"
-
-openssl genpkey \
-  -algorithm RSA \
-  -pkeyopt rsa_keygen_bits:2048 \
-  -out /tmp/hw29-private.pem
-
-openssl rsa \
-  -pubout \
-  -in /tmp/hw29-private.pem \
-  -out /tmp/hw29-public.pem
-
-export JWT_PRIVATE_KEY="$(openssl base64 -A -in /tmp/hw29-private.pem)"
-export JWT_PUBLIC_KEY="$(openssl base64 -A -in /tmp/hw29-public.pem)"
-export REFRESH_TOKEN_PEPPER="$(openssl rand -hex 32)"
-
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:22918
-export PROMETHEUS_URL=http://127.0.0.1:22901
-export TRACE_API_URL=http://127.0.0.1:22904
-```
-
-If the local database is started from the repository Docker Compose stack, use:
-
-```bash
-export DB_HOST=127.0.0.1
-export DB_PORT=5432
-export DB_USER=marketplace
-export DB_PASSWORD=marketplace_password
-export DB_NAME=marketplace
-export DB_URL="postgresql://marketplace:marketplace_password@127.0.0.1:5432/marketplace"
-```
-
-### 3. Install dependencies
-
-```bash
-npm ci
-npm --prefix infra ci
-```
-
-### 4. HW28 image and security checks
-
-```bash
-npm run image:build
-npm run demo:image
-```
-
-Check scan gate:
-
-```bash
-set +e
-SCAN_MAX=-1 npm run scan
-NEGATIVE_SCAN_EXIT=$?
-set -e
-
-test "$NEGATIVE_SCAN_EXIT" -ne 0
-
-SCAN_MAX=99999 npm run scan
-```
-
-### 5. Start application dependencies
-
-```bash
-docker compose up -d --wait
-```
-
-### 6. Start observability stack
-
-```bash
-docker compose \
-  -f observability/docker-compose.yml \
-  up -d --wait
-```
-
-The observability stack uses ports in the `22900–22999` range.
-
-Verify:
-
-```bash
-curl -s http://127.0.0.1:22901/-/ready
-curl -s http://127.0.0.1:22900/api/health
-```
-
-### 7. Compile
-
-```bash
-npx tsc --noEmit
-npm run build
-```
-
-### 8. Run HW29 acceptance demos
-
-```bash
-npm run demo:logs
-npm run demo:metrics
-npm run demo:trace
-```
-
-Expected `demo:logs` invariants:
-
-```text
-non-json-lines=0
-layers>=3
-distinct-trace-ids=1
-trace-id-matches-header=1
-burst>=8
-burst-trace-ids=burst
-burst-uneven=0
-secret-req-logged=1
-secret-in-logs=0
-```
-
-Expected `demo:metrics` invariants:
-
-```text
-sent-ok + sent-fail >= 50
-counter-delta = sent-ok + sent-fail
-errors-delta = sent-fail
-above-top-bucket=0
-series-after = series-before
-```
-
-Expected `demo:trace` invariants:
-
-```text
-spans>=2
-orphan-spans=0
-trace-matches-header=1
-trace-matches-log=1
-span-status-error=1
-```
-
-The three demo scripts are invoked through `scripts/with-secrets.sh`.
-
-### 9. HW28 Kubernetes acceptance
-
-Create cluster and deploy:
-
-```bash
-npm run cluster:up
-npm run up
-```
-
-Verify resources:
-
-```bash
-kubectl -n marketplace-hw28 get pods
-kubectl -n marketplace-hw28 get deploy marketplace-deployment
-kubectl -n marketplace-hw28 get svc marketplace-service
-kubectl -n marketplace-hw28 get pdb marketplace-pdb
-kubectl -n marketplace-hw28 get hpa marketplace-hpa
-```
-
-Run acceptance demos:
-
-```bash
-npm run demo:rollout
-npm run demo:pdb
-```
-
-### 10. Final checks
-
-```bash
-npx tsc --noEmit
-npm --prefix infra run typecheck
-git diff --check
-```
-
-Check that the HW29 demo scripts use the secret wrapper:
-
-```bash
-node -e "
-const s=require('./package.json').scripts;
-const need=['demo:logs','demo:metrics','demo:trace'];
-const bad=need.filter(k=>/with-secrets\\.sh/.test(s[k]||'')===false);
-console.log(bad.length===0?'OK':'без обгортки: '+bad.join(', '));
-process.exit(bad.length===0?0:1);
-"
-```
-
-Expected:
-
-```text
-OK
-```
-
-### 11. Cleanup
-
-```bash
-docker compose \
-  -f observability/docker-compose.yml \
-  down
-
-npm run destroy
-npm run cluster:down
-docker compose down
-```
-
-## Structure
-
-```text
-docker/
-  Dockerfile
-
-infra/
-  index.ts
-  package.json
-  package-lock.json
-  Pulumi.yaml
-  tsconfig.json
-
-k8s/
-  kind-config.yaml
-
-observability/
-  docker-compose.yml
-  prometheus/
-    prometheus.yml
-  grafana/
-    dashboards/
-      marketplace-observability.json
-    provisioning/
-      dashboards/
-        marketplace.yml
-      datasources/
-        marketplace.yml
-
-demo/
-  demo-image.sh
-  demo-rollout.sh
-  demo-pdb.sh
-  rollout-load.mjs
-  demo-logs.sh
-  demo-logs.mjs
-  demo-metrics.sh
-  demo-metrics.mjs
-  demo-trace.sh
-  demo-trace.mjs
-
-src/
-  observability/
-    context.ts
-    logger.ts
-    metrics.ts
-    metrics.controller.ts
-    metrics.interceptor.ts
-    observability.controller.ts
-    observability.service.ts
-    orders.repository.ts
-    request-context.middleware.ts
-    telemetry.ts
-
-scripts/
-  cluster-up.sh
-  cluster-down.sh
-  pulumi-up.sh
-  pulumi-destroy.sh
-  scan-image.sh
-  with-secrets.sh
-
-.github/workflows/
-  hw28-security.yml
-```
-
-## AWS
-
-смуга: основна
-
-teardown-run: `https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45385253496`
-
-region: `eu-north-1` (Europe/Stockholm)
-
-HW31 uses real AWS resources managed by Pulumi. The infrastructure is split into two stacks so that resources with hourly cost exist only for the duration of the demo:
-
-- `base` — AWS Budget, VPC, 2 public + 2 private subnets across two AZs, IGW, route tables, security groups and GitHub OIDC/IAM. No hourly resources.
-- `demo` — RDS PostgreSQL Multi-AZ instance, internet-facing ALB with Lambda target, and an optional NAT Gateway controlled by `withNat`.
-
-### AWS account and cost guardrail
-
-The work was performed on the AWS Free plan without upgrading to Paid. The first AWS resource in `base` is a monthly COST budget with a `$5` limit and an ACTUAL notification at 20% using `GREATER_THAN` and `PERCENTAGE`.
-
-The budget is an alert, not an immediate circuit breaker. The real guardrail for this homework is short-lived `demo` infrastructure plus the scheduled/manual teardown workflow.
-
-### Pricing
-
-Pricing sources checked on **2026-11-23**:
-
-- AWS Elastic Load Balancing pricing: hourly or partial-hour ALB charge plus LCU usage.
-- Amazon VPC pricing: NAT Gateway is billed per provisioned hour or partial hour, plus data processing; public IPv4 is billed separately.
-- Course reference snapshot dated **2026-08-24** gives the exact Frankfurt (`eu-central-1`) reference rates used by the assignment and notes that the same stack in Stockholm was about 9.8% cheaper in that comparison.
-
-For the actual homework region `eu-north-1`, the table below uses the assignment's Stockholm comparison as the course reference. It is an estimate for the exercise, not a production quote; AWS pricing should be rechecked before production use.
-
-| Item                                   |     eu-north-1 course reference | Billing note                                                                                                                                     |
-| -------------------------------------- | ------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ALB                                    |               ≈ `$0.02395/hour` | Derived from the assignment's Stockholm comparison (≈11.3% below `$0.02700/hour` Frankfurt reference); LCU is additional.                        |
-| RDS `db.t4g.micro` PostgreSQL Multi-AZ |               ≈ `$0.03293/hour` | Derived from the assignment's Stockholm comparison (≈11% below `$0.03700/hour` Frankfurt reference).                                             |
-| Public IPv4 × 2 for ALB                |                 `$0.01000/hour` | `$0.00500/hour` per public IPv4; assignment notes this does not change between Frankfurt and Stockholm.                                          |
-| gp3 20 GiB, Multi-AZ                   | regional monthly storage charge | Storage is charged separately from the DB instance; the assignment's Frankfurt snapshot was `$0.274/GiB-month`.                                  |
-| NAT Gateway, optional demo only        |        ≈ `$0.04602/hour` + IPv4 | Derived from the assignment's Stockholm comparison (≈11.5% below `$0.052/hour` Frankfurt reference). Partial NAT hours are billed as full hours. |
-
-The assignment's reference full stack was `$0.08191/hour` in Frankfurt. Applying its documented 9.8% Stockholm difference gives an exercise reference of approximately `$0.07387/hour` for the comparable Stockholm stack before any different real traffic/LCU usage.
-
-The NAT measurement was intentionally short-lived:
-
-```text
-nat-minutes=5
-nat-billed-hours=1
-```
-
-The values differ because AWS bills each partial NAT Gateway hour as a full hour.
-
-### Network
-
-Verified `base` evidence:
-
-```text
-vpc-id=vpc-0aea289813a3a9ed4
-public-subnets=2
-private-subnets=2
-subnet-azs=2
-private-default-route=0
-security-groups=3
-tagged-resources=16
-```
-
-The private route table has no `0.0.0.0/0` route to the Internet Gateway. NAT is not part of the permanent `base` stack.
-
-Default tags are applied through the AWS Pulumi provider:
-
-```text
-Project=nodejs-pro-hw31
-Stack=<base|demo>
-ManagedBy=pulumi
-```
-
-### GitHub OIDC and IAM
-
-GitHub Actions authenticates to AWS with `sts:AssumeRoleWithWebIdentity` through the GitHub OIDC provider:
-
-```text
-https://token.actions.githubusercontent.com
-```
-
-The trust policy restricts the audience to:
-
-```text
-sts.amazonaws.com
-```
-
-and the subject to this repository:
-
-```text
-repo:Anastasiya-B/rbdrm-course-project:*
-```
-
-The teardown permission policy intentionally contains no wildcard `Action`. `Resource: "*"` is used where the AWS APIs used by teardown/verification do not support practical resource-level restriction for this exercise.
-
-Each permission is used for one of the following teardown or verification operations:
-
-| IAM Action                                   | Why it is required                                                |
-| -------------------------------------------- | ----------------------------------------------------------------- |
-| `ec2:DescribeAccountAttributes`              | Read EC2 account/network attributes used by the provider.         |
-| `ec2:DescribeAddresses`                      | Verify and release Elastic IP addresses.                          |
-| `ec2:DescribeAvailabilityZones`              | Read AZ metadata for the VPC/subnets.                             |
-| `ec2:DescribeInternetGateways`               | Read IGW state before deletion.                                   |
-| `ec2:DescribeNatGateways`                    | Verify NAT state and final `nat-left` count.                      |
-| `ec2:DescribeNetworkInterfaces`              | Inspect ENIs that can block VPC/SG deletion.                      |
-| `ec2:DescribeRouteTables`                    | Read route tables before teardown.                                |
-| `ec2:DescribeSecurityGroups`                 | Read security groups before teardown.                             |
-| `ec2:DescribeSubnets`                        | Read subnet state before teardown.                                |
-| `ec2:DescribeTags`                           | Read AWS tags used by Pulumi/provider teardown.                   |
-| `ec2:DescribeVpcAttribute`                   | Read VPC attributes used by the provider.                         |
-| `ec2:DescribeVpcs`                           | Read/verify the VPC; this is the positive IAM simulation action.  |
-| `ec2:DeleteNatGateway`                       | Delete the optional NAT Gateway.                                  |
-| `ec2:ReleaseAddress`                         | Release the NAT Elastic IP.                                       |
-| `ec2:DeleteRoute`                            | Remove the optional private default route.                        |
-| `ec2:DisassociateRouteTable`                 | Remove subnet/route-table associations.                           |
-| `ec2:DeleteRouteTable`                       | Delete route tables.                                              |
-| `ec2:DeleteSubnet`                           | Delete public/private subnets.                                    |
-| `ec2:DetachInternetGateway`                  | Detach the IGW from the VPC.                                      |
-| `ec2:DeleteInternetGateway`                  | Delete the IGW.                                                   |
-| `ec2:DeleteSecurityGroup`                    | Delete ALB/app/RDS security groups.                               |
-| `ec2:DeleteVpc`                              | Delete the VPC.                                                   |
-| `rds:DescribeDBInstances`                    | Read RDS state and calculate `rds-left`.                          |
-| `rds:DescribeDBSubnetGroups`                 | Read the DB subnet group before deletion.                         |
-| `rds:DescribeEvents`                         | Read RDS failover events.                                         |
-| `rds:ListTagsForResource`                    | Read RDS tags during provider operations.                         |
-| `rds:DeleteDBInstance`                       | Delete the demo PostgreSQL instance.                              |
-| `rds:DeleteDBSubnetGroup`                    | Delete the DB subnet group.                                       |
-| `elasticloadbalancing:DescribeListeners`     | Read ALB listeners.                                               |
-| `elasticloadbalancing:DescribeLoadBalancers` | Read ALB state and calculate `alb-left`.                          |
-| `elasticloadbalancing:DescribeTags`          | Read ALB tags.                                                    |
-| `elasticloadbalancing:DescribeTargetGroups`  | Read target-group state.                                          |
-| `elasticloadbalancing:DescribeTargetHealth`  | Verify target health.                                             |
-| `elasticloadbalancing:DeregisterTargets`     | Remove Lambda target registration.                                |
-| `elasticloadbalancing:DeleteListener`        | Delete the HTTP listener.                                         |
-| `elasticloadbalancing:DeleteTargetGroup`     | Delete the target group.                                          |
-| `elasticloadbalancing:DeleteLoadBalancer`    | Delete the ALB.                                                   |
-| `lambda:GetFunction`                         | Read Lambda function state.                                       |
-| `lambda:GetFunctionConfiguration`            | Read Lambda configuration.                                        |
-| `lambda:GetPolicy`                           | Read Lambda resource policy.                                      |
-| `lambda:ListTags`                            | Read Lambda tags.                                                 |
-| `lambda:RemovePermission`                    | Remove ALB invoke permission.                                     |
-| `lambda:DeleteFunction`                      | Delete the Lambda target.                                         |
-| `iam:GetRole`                                | Read IAM roles.                                                   |
-| `iam:GetRolePolicy`                          | Read inline role policies.                                        |
-| `iam:GetOpenIDConnectProvider`               | Read the GitHub OIDC provider.                                    |
-| `iam:ListRolePolicies`                       | Enumerate inline role policies before role deletion.              |
-| `iam:ListAttachedRolePolicies`               | Enumerate managed policies attached to the demo Lambda role.      |
-| `iam:DetachRolePolicy`                       | Detach `AWSLambdaBasicExecutionRole`.                             |
-| `iam:DeleteRolePolicy`                       | Delete the teardown inline policy.                                |
-| `iam:DeleteRole`                             | Delete IAM roles created by the stacks.                           |
-| `iam:DeleteOpenIDConnectProvider`            | Delete the GitHub OIDC provider.                                  |
-| `budgets:ViewBudget`                         | Read the HW31 budget.                                             |
-| `budgets:ModifyBudget`                       | Authorize budget modification/deletion during teardown.           |
-| `aws-portal:ViewBilling`                     | Billing/budget read authorization used by the budget API.         |
-| `aws-portal:ModifyBilling`                   | Billing/budget modification authorization used by the budget API. |
-| `tag:GetResources`                           | Count tagged project resources after teardown.                    |
-
-`simulate-principal-policy` evidence:
-
-```text
-sim-allowed=allowed
-sim-denied=implicitDeny
-```
-
-The positive simulation uses `ec2:DescribeVpcs`. The negative simulation uses `s3:PutObject`, which is intentionally absent from the teardown role.
-
-### RDS Multi-AZ versus my HW15 database stack
-
-In HW15 I was responsible for the database topology myself: primary/replica roles, connection routing through PgBouncer and the backup script were application/infrastructure responsibilities. With RDS Multi-AZ instance deployment, AWS takes over provisioning and maintaining the standby instance in another AZ, replication required by the Multi-AZ service, infrastructure-level failover, instance replacement, managed backups/retention and much of the underlying database host maintenance.
-
-RDS does **not** take over application-level responsibilities. The application still owns schema/migrations, credentials and secret handling, connection-pool configuration, retry/reconnect behaviour during failover, observability, query/index performance, data-retention policy and restore testing. If PgBouncer or another application-level pool/proxy is required by the workload, that is still an architectural choice rather than something Multi-AZ automatically replaces.
-
-Measured failover evidence:
-
-```text
-az-before=eu-north-1b
-az-after=eu-north-1a
-failover-seconds=79
-event=Multi-AZ instance failover completed
-```
-
-### ALB demo
-
-The ALB is internet-facing and spans the two public subnets. Its target is a Lambda function, which avoids adding an EC2 instance and another public IPv4 line to the homework bill.
-
-Measured evidence:
-
-```text
-alb-dns=hw31-alb-6319a9a-276409093.eu-north-1.elb.amazonaws.com
-http-code=200
-target-state=healthy
-```
-
-### KMS and secrets
-
-KMS is not a replacement for the secret-storage approach from HW11. It is a cryptographic layer underneath secret storage: a secret such as an application `ENCRYPTION_KEY` can itself be encrypted with a KMS key, while the secret manager/vault still owns secret storage, access workflow, rotation and delivery to the application.
-
-This homework does not create a customer-managed KMS key because it is unnecessary for the acceptance criteria and would introduce another billable resource that can outlive a short demo. RDS storage encryption is enabled using the service-supported encryption path without creating a dedicated CMK for HW31.
-
-### Pulumi state backend: HW28 versus HW31
-
-HW28 used a local file backend:
-
-```text
-file://$PWD/.pulumi
-```
-
-That was appropriate for a local `kind` environment because deployment and teardown ran from the same development machine.
-
-HW31 uses Pulumi Cloud:
-
-```text
-https://app.pulumi.com
-```
-
-with stacks:
-
-```text
-zona2406-gmail-com-org/rbdrm-hw31-base/dev
-zona2406-gmail-com-org/rbdrm-hw31-demo/dev
-```
-
-The difference is intentional: the scheduled/manual GitHub Actions teardown runs on an ephemeral GitHub runner, so a state file stored only on the development laptop would not be accessible to CI. Pulumi Cloud provides the shared state required for `pulumi destroy` from both local development and GitHub Actions.
-
-GitHub Actions authenticates to Pulumi Cloud using GitHub OIDC and a short-lived Pulumi token rather than a long-lived AWS access key.
-
-### HW31 evidence
-
-Repository evidence:
-
-```text
-evidence/base.txt
-evidence/base-state.json
-evidence/iam.json
-evidence/iam.txt
-evidence/demos.txt
-```
-
-Current demo evidence:
-
-```text
-alb-dns=hw31-alb-6319a9a-276409093.eu-north-1.elb.amazonaws.com
-http-code=200
-target-state=healthy
-az-before=eu-north-1b
-az-after=eu-north-1a
-failover-seconds=79
-event=Multi-AZ instance failover completed
-nat-minutes=5
-nat-billed-hours=1
-```
-
-The GitHub Actions teardown run is the authoritative external teardown proof. The accepted final run must print:
-
-```text
-state-resources-left=0
-tagged-resources-left=0
-rds-left=0
-alb-left=0
-nat-left=0
-eip-left=0
-```
-
-### HW31 commands
-
-All fixed HW31 scripts are invoked through `scripts/with-secrets.sh`:
-
-```bash
-npm run up:base
-npm run up:demo
-npm run demo:alb
-npm run demo:failover
-npm run demo:nat
-npm run destroy:demo
-npm run destroy:base
-```
-
-The teardown workflow is available at:
-
-```text
-.github/workflows/teardown.yml
-```
-
-It supports both nightly `schedule` execution and manual `workflow_dispatch` execution with AWS OIDC authentication.
-
-## Submission
-
-Branch:
-
-```text
-hw-29
-```
-
-Submit a Pull Request from `hw-29`.
-
-The `OpenTelemetry tracing` section contains the latest verified passing `demo:trace` numbers.
+- The original HW0 template remains unavailable; the domain table is repository-derived.
+- Cache/file demo evidence is incomplete in the current sanitized evidence set.
+- RabbitMQ crash/retry/DLQ failure-mode transcripts are incomplete.
+- Graceful shutdown is runtime-verified with a disposable Compose API: healthz=200 and readyz=200 before SIGTERM, readyz=503 on the first shutdown poll, and exit-code=0 after the HTTP server closed. The main Compose API was not stopped. The deployment artifact separately verifies `/readyz` and `/healthz`, 3/3 ready and updated replicas, and a 15-second termination grace period. PDB/HPA configuration remains documented in `infra/index.ts`.
+- The Trivy gate passes with 9 findings; the findings remain a documented risk.
+- No final grade is guaranteed.

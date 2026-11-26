@@ -9,6 +9,8 @@ import {
 } from '@nestjs/common';
 
 import { AuthGuard, type AuthenticatedRequest } from '../auth/auth.guard';
+import { ZodValidationPipe } from '../validation/zod.pipe';
+import { uploadCommitSchema, uploadIntentSchema } from '../validation/schemas';
 
 import { FilesService, type CreateUploadIntentInput } from './files.service';
 
@@ -26,7 +28,7 @@ export class FilesController {
   async createIntent(
     @Req()
     request: AuthenticatedRequest,
-    @Body()
+    @Body(new ZodValidationPipe(uploadIntentSchema))
     body: CreateUploadIntentInput,
   ) {
     const user = request.user;
@@ -44,7 +46,7 @@ export class FilesController {
   async commit(
     @Req()
     request: AuthenticatedRequest,
-    @Body()
+    @Body(new ZodValidationPipe(uploadCommitSchema))
     body: CommitUploadBody,
   ) {
     const user = request.user;

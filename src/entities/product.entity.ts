@@ -9,7 +9,8 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-import { User } from './user.entity';
+import { User as UserEntity } from './user.entity';
+import type { User } from './user.entity';
 import { OrderItem } from './order-item.entity';
 
 @Entity({ name: 'products' })
@@ -66,7 +67,7 @@ export class Product {
   })
   searchVector!: string;
 
-  @ManyToOne(() => User, user => user.products, {
+  @ManyToOne(() => UserEntity, user => user.products, {
     onDelete: 'RESTRICT',
   })
   @JoinColumn({

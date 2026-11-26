@@ -2,6 +2,9 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Verifier } from '@pact-foundation/pact';
 import path from 'node:path';
+import { generateKeyPairSync } from 'node:crypto';
+import { signAccessToken } from '../../../src/auth/auth.tokens';
+import type { RequestHandler } from 'express';
 
 import {
   IntegrationDatabase,
@@ -13,6 +16,7 @@ describe('MarketplaceAPI provider verification', () => {
   let database: IntegrationDatabase;
   let app: INestApplication;
   let providerBaseUrl: string;
+  let contractToken: string;
 
   beforeAll(async () => {
     database = await startIntegrationDatabase();
@@ -20,6 +24,23 @@ describe('MarketplaceAPI provider verification', () => {
     process.env.DB_URL = database.container.getConnectionUri();
     process.env.DB_PASSWORD_FILE = 'secrets/db_password';
     process.env.PORT = '3000';
+
+    const databaseUrl = new URL(database.container.getConnectionUri());
+    process.env.DB_HOST = databaseUrl.hostname;
+    process.env.DB_PORT = databaseUrl.port;
+    process.env.DB_USER = decodeURIComponent(databaseUrl.username);
+    process.env.DB_PASSWORD = decodeURIComponent(databaseUrl.password);
+    process.env.DB_NAME = databaseUrl.pathname.slice(1);
+
+    const keys = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    process.env.JWT_KID = 'pact-key';
+    process.env.JWT_PRIVATE_KEY = Buffer.from(
+      keys.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    ).toString('base64');
+    process.env.JWT_PUBLIC_KEY = Buffer.from(
+      keys.publicKey.export({ type: 'spki', format: 'pem' }),
+    ).toString('base64');
+    process.env.REFRESH_TOKEN_PEPPER = 'pact-pepper';
 
     const { AppModule } = await import('../../../src/app.module');
 
@@ -30,6 +51,8 @@ describe('MarketplaceAPI provider verification', () => {
     app = moduleRef.createNestApplication();
 
     await app.listen(0, '127.0.0.1');
+
+    contractToken = signAccessToken(1, 'buyer', 'pact-family').token;
 
     const address = app.getHttpServer().address();
 
@@ -161,6 +184,10 @@ describe('MarketplaceAPI provider verification', () => {
       ],
       stateHandlers,
       logLevel: 'info' as const,
+      requestFilter: ((request, _response, next) => {
+        request.headers.authorization = `Bearer ${contractToken}`;
+        next();
+      }) satisfies RequestHandler,
     };
 
     const brokerOptions = {

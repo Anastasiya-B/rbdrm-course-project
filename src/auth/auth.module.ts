@@ -4,10 +4,11 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { RolesGuard } from './roles.guard';
+import { RateLimitGuard } from '../redis/rate-limit.guard';
 
 @Module({
   controllers: [AuthController],
-  providers: [AuthService, AuthGuard, RolesGuard],
-  exports: [AuthService, AuthGuard, RolesGuard],
+  providers: [AuthService, AuthGuard, RolesGuard, RateLimitGuard],
+  exports: [AuthService, AuthGuard, RolesGuard, RateLimitGuard],
 })
 export class AuthModule {}

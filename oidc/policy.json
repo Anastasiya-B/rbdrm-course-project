@@ -1,0 +1,9 @@
+{
+  "issuer": "https://token.actions.githubusercontent.com",
+  "audience": "sts.amazonaws.com",
+  "allowedSubjects": [
+    "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:pull_request",
+    "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:ref:refs/heads/hw-32",
+    "repo:Anastasiya-B@33089331/rbdrm-course-project@1353348427:ref:refs/heads/main"
+  ]
+}

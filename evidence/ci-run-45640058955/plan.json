@@ -1,0 +1,611 @@
+{
+    "steps": [
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "custom": false,
+                "type": "pulumi:pulumi:Stack",
+                "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#38,19",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#38,19"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#601,38"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Namespace::marketplace-namespace",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Namespace::marketplace-namespace",
+                "custom": true,
+                "type": "kubernetes:core/v1:Namespace",
+                "inputs": {
+                    "apiVersion": "v1",
+                    "kind": "Namespace",
+                    "metadata": {
+                        "name": "marketplace-hw28"
+                    }
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "kind": [],
+                    "metadata": []
+                },
+                "sourcePosition": "project:///index.ts#50,19",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#50,19"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Secret::marketplace-runtime-secret-resource",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Secret::marketplace-runtime-secret-resource",
+                "custom": true,
+                "type": "kubernetes:core/v1:Secret",
+                "inputs": {
+                    "apiVersion": "v1",
+                    "data": "[secret]",
+                    "kind": "Secret",
+                    "metadata": {
+                        "name": "marketplace-runtime-secret",
+                        "namespace": "marketplace-hw28"
+                    },
+                    "type": "Opaque"
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "dependencies": [
+                    "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Namespace::marketplace-namespace"
+                ],
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "data": [],
+                    "kind": [],
+                    "metadata": [],
+                    "type": []
+                },
+                "additionalSecretOutputs": [
+                    "data",
+                    "stringData"
+                ],
+                "sourcePosition": "project:///index.ts#56,16",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#56,16"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:apps/v1:Deployment::marketplace-deployment-resource",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:apps/v1:Deployment::marketplace-deployment-resource",
+                "custom": true,
+                "type": "kubernetes:apps/v1:Deployment",
+                "inputs": {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "metadata": {
+                        "name": "marketplace-deployment",
+                        "namespace": "marketplace-hw28"
+                    },
+                    "spec": {
+                        "replicas": 3,
+                        "selector": {
+                            "matchLabels": {
+                                "app": "marketplace"
+                            }
+                        },
+                        "strategy": {
+                            "rollingUpdate": {
+                                "maxSurge": 1,
+                                "maxUnavailable": 0
+                            },
+                            "type": "RollingUpdate"
+                        },
+                        "template": {
+                            "metadata": {
+                                "annotations": {
+                                    "revision": "initial"
+                                },
+                                "labels": {
+                                    "app": "marketplace"
+                                }
+                            },
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "env": [
+                                            {
+                                                "name": "PORT",
+                                                "value": "3000"
+                                            },
+                                            {
+                                                "name": "DB_HOST",
+                                                "value": "postgres.invalid"
+                                            },
+                                            {
+                                                "name": "DB_PORT",
+                                                "value": "5432"
+                                            },
+                                            {
+                                                "name": "DB_USER",
+                                                "value": "marketplace"
+                                            },
+                                            {
+                                                "name": "DB_NAME",
+                                                "value": "marketplace"
+                                            },
+                                            {
+                                                "name": "DB_PASSWORD",
+                                                "valueFrom": {
+                                                    "secretKeyRef": {
+                                                        "key": "DB_PASSWORD",
+                                                        "name": "marketplace-runtime-secret"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "name": "DB_PASSWORD_FILE",
+                                                "value": "/run/secrets/db_password"
+                                            },
+                                            {
+                                                "name": "DB_URL",
+                                                "value": "postgresql://marketplace@postgres.invalid:5432/marketplace"
+                                            },
+                                            {
+                                                "name": "DATABASE_URL",
+                                                "value": "postgresql://marketplace@postgres.invalid:5432/marketplace"
+                                            },
+                                            {
+                                                "name": "JWT_KID",
+                                                "valueFrom": {
+                                                    "secretKeyRef": {
+                                                        "key": "JWT_KID",
+                                                        "name": "marketplace-runtime-secret"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "name": "JWT_PRIVATE_KEY",
+                                                "valueFrom": {
+                                                    "secretKeyRef": {
+                                                        "key": "JWT_PRIVATE_KEY",
+                                                        "name": "marketplace-runtime-secret"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "name": "JWT_PUBLIC_KEY",
+                                                "valueFrom": {
+                                                    "secretKeyRef": {
+                                                        "key": "JWT_PUBLIC_KEY",
+                                                        "name": "marketplace-runtime-secret"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "name": "REFRESH_TOKEN_PEPPER",
+                                                "valueFrom": {
+                                                    "secretKeyRef": {
+                                                        "key": "REFRESH_TOKEN_PEPPER",
+                                                        "name": "marketplace-runtime-secret"
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "name": "REV",
+                                                "value": "initial"
+                                            }
+                                        ],
+                                        "image": "rbdrm-marketplace:hw28",
+                                        "imagePullPolicy": "IfNotPresent",
+                                        "livenessProbe": {
+                                            "failureThreshold": 3,
+                                            "httpGet": {
+                                                "path": "/healthz",
+                                                "port": "http"
+                                            },
+                                            "periodSeconds": 5,
+                                            "timeoutSeconds": 1
+                                        },
+                                        "name": "marketplace",
+                                        "ports": [
+                                            {
+                                                "containerPort": 3000,
+                                                "name": "http"
+                                            }
+                                        ],
+                                        "readinessProbe": {
+                                            "failureThreshold": 1,
+                                            "httpGet": {
+                                                "path": "/readyz",
+                                                "port": "http"
+                                            },
+                                            "periodSeconds": 1,
+                                            "successThreshold": 1,
+                                            "timeoutSeconds": 1
+                                        },
+                                        "resources": {
+                                            "limits": {
+                                                "cpu": "500m",
+                                                "memory": "256Mi"
+                                            },
+                                            "requests": {
+                                                "cpu": "50m",
+                                                "memory": "96Mi"
+                                            }
+                                        },
+                                        "securityContext": {
+                                            "allowPrivilegeEscalation": false,
+                                            "capabilities": {
+                                                "drop": [
+                                                    "ALL"
+                                                ]
+                                            },
+                                            "readOnlyRootFilesystem": true
+                                        },
+                                        "volumeMounts": [
+                                            {
+                                                "mountPath": "/run/secrets",
+                                                "name": "runtime-secret",
+                                                "readOnly": true
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "securityContext": {
+                                    "runAsGroup": 65532,
+                                    "runAsNonRoot": true,
+                                    "runAsUser": 65532
+                                },
+                                "terminationGracePeriodSeconds": 15,
+                                "volumes": [
+                                    {
+                                        "name": "runtime-secret",
+                                        "secret": {
+                                            "items": [
+                                                {
+                                                    "key": "DB_PASSWORD",
+                                                    "path": "db_password"
+                                                }
+                                            ],
+                                            "secretName": "marketplace-runtime-secret"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "dependencies": [
+                    "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Secret::marketplace-runtime-secret-resource"
+                ],
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "kind": [],
+                    "metadata": [],
+                    "spec": []
+                },
+                "sourcePosition": "project:///index.ts#83,20",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#83,20"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ],
+                "ignoreChanges": [
+                    "spec.replicas"
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:policy/v1:PodDisruptionBudget::marketplace-pdb-resource",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:policy/v1:PodDisruptionBudget::marketplace-pdb-resource",
+                "custom": true,
+                "type": "kubernetes:policy/v1:PodDisruptionBudget",
+                "inputs": {
+                    "apiVersion": "policy/v1",
+                    "kind": "PodDisruptionBudget",
+                    "metadata": {
+                        "name": "marketplace-pdb",
+                        "namespace": "marketplace-hw28"
+                    },
+                    "spec": {
+                        "minAvailable": 2,
+                        "selector": {
+                            "matchLabels": {
+                                "app": "marketplace"
+                            }
+                        }
+                    }
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "dependencies": [
+                    "urn:pulumi:ci::rbdrm-hw28::kubernetes:apps/v1:Deployment::marketplace-deployment-resource"
+                ],
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "kind": [],
+                    "metadata": [],
+                    "spec": []
+                },
+                "sourcePosition": "project:///index.ts#386,13",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#386,13"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:autoscaling/v2:HorizontalPodAutoscaler::marketplace-hpa-resource",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:autoscaling/v2:HorizontalPodAutoscaler::marketplace-hpa-resource",
+                "custom": true,
+                "type": "kubernetes:autoscaling/v2:HorizontalPodAutoscaler",
+                "inputs": {
+                    "apiVersion": "autoscaling/v2",
+                    "kind": "HorizontalPodAutoscaler",
+                    "metadata": {
+                        "name": "marketplace-hpa",
+                        "namespace": "marketplace-hw28"
+                    },
+                    "spec": {
+                        "maxReplicas": 5,
+                        "metrics": [
+                            {
+                                "resource": {
+                                    "name": "cpu",
+                                    "target": {
+                                        "averageUtilization": 70,
+                                        "type": "Utilization"
+                                    }
+                                },
+                                "type": "Resource"
+                            }
+                        ],
+                        "minReplicas": 2,
+                        "scaleTargetRef": {
+                            "apiVersion": "apps/v1",
+                            "kind": "Deployment",
+                            "name": "marketplace-deployment"
+                        }
+                    }
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "dependencies": [
+                    "urn:pulumi:ci::rbdrm-hw28::kubernetes:apps/v1:Deployment::marketplace-deployment-resource"
+                ],
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "kind": [],
+                    "metadata": [],
+                    "spec": []
+                },
+                "sourcePosition": "project:///index.ts#408,13",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#408,13"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        },
+        {
+            "op": "create",
+            "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Service::marketplace-service-resource",
+            "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+            "newState": {
+                "urn": "urn:pulumi:ci::rbdrm-hw28::kubernetes:core/v1:Service::marketplace-service-resource",
+                "custom": true,
+                "type": "kubernetes:core/v1:Service",
+                "inputs": {
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "metadata": {
+                        "name": "marketplace-service",
+                        "namespace": "marketplace-hw28"
+                    },
+                    "spec": {
+                        "ports": [
+                            {
+                                "name": "http",
+                                "nodePort": 30080,
+                                "port": 3000,
+                                "targetPort": "http"
+                            }
+                        ],
+                        "selector": {
+                            "app": "marketplace"
+                        },
+                        "type": "NodePort"
+                    }
+                },
+                "parent": "urn:pulumi:ci::rbdrm-hw28::pulumi:pulumi:Stack::rbdrm-hw28-ci",
+                "dependencies": [
+                    "urn:pulumi:ci::rbdrm-hw28::kubernetes:apps/v1:Deployment::marketplace-deployment-resource"
+                ],
+                "provider": "urn:pulumi:ci::rbdrm-hw28::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+                "propertyDependencies": {
+                    "apiVersion": [],
+                    "kind": [],
+                    "metadata": [],
+                    "spec": []
+                },
+                "sourcePosition": "project:///index.ts#354,17",
+                "stackTrace": [
+                    {
+                        "sourcePosition": "project:///index.ts#354,17"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1618,23"
+                    },
+                    {},
+                    {
+                        "sourcePosition": "project:///../node_modules/ts-node/src/index.ts#1621,12"
+                    },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#79,28"
+                    },
+                    {
+                        "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1687,22"
+                    }
+                ]
+            },
+            "detailedDiff": null
+        }
+    ],
+    "duration": 2673934123,
+    "changeSummary": {
+        "create": 7
+    }
+}

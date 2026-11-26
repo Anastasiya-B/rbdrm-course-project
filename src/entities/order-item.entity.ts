@@ -8,8 +8,10 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
-import { Order } from './order.entity';
-import { Product } from './product.entity';
+import { Order as OrderEntity } from './order.entity';
+import type { Order } from './order.entity';
+import { Product as ProductEntity } from './product.entity';
+import type { Product } from './product.entity';
 
 @Entity({ name: 'order_items' })
 @Index('idx_order_items_order_id', ['orderId'])
@@ -42,7 +44,7 @@ export class OrderItem {
   })
   createdAt!: Date;
 
-  @ManyToOne(() => Order, order => order.items, {
+  @ManyToOne(() => OrderEntity, order => order.items, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({
@@ -51,7 +53,7 @@ export class OrderItem {
   })
   order!: Order;
 
-  @ManyToOne(() => Product, product => product.orderItems, {
+  @ManyToOne(() => ProductEntity, product => product.orderItems, {
     onDelete: 'RESTRICT',
   })
   @JoinColumn({

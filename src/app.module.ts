@@ -1,6 +1,6 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
@@ -17,6 +17,8 @@ import { OrderEventsService } from './orders/order-events.service';
 import { OrdersController } from './orders/orders.controller';
 import { OrdersGateway } from './orders/orders.gateway';
 import { OrdersService } from './orders/orders.service';
+import { PaymentModule } from './payments/payment.module';
+import { ProblemDetailsFilter } from './observability/problem-details.filter';
 
 @Module({
   imports: [
@@ -30,6 +32,7 @@ import { OrdersService } from './orders/orders.service';
 
     AuthModule,
     FilesModule,
+    PaymentModule,
   ],
 
   controllers: [
@@ -47,11 +50,16 @@ import { OrdersService } from './orders/orders.service';
 
     ObservabilityOrdersRepository,
     ObservabilityService,
+    ProblemDetailsFilter,
 
     {
       provide: APP_INTERCEPTOR,
 
       useClass: MetricsInterceptor,
+    },
+    {
+      provide: APP_FILTER,
+      useClass: ProblemDetailsFilter,
     },
   ],
 })

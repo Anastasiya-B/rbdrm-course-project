@@ -31,6 +31,11 @@ function getPort(): number {
   return port;
 }
 
+const migrationDirectory =
+  typeof __dirname === 'undefined'
+    ? `${process.cwd()}/src/migrations`
+    : `${__dirname}/migrations`;
+
 const AppDataSource = new DataSource({
   type: 'postgres',
   host: getRequiredEnv('DB_HOST'),
@@ -39,7 +44,7 @@ const AppDataSource = new DataSource({
   password: getRequiredEnv('DB_PASSWORD'),
   database: getRequiredEnv('DB_NAME'),
   entities: [User, Product, Order, OrderItem, PostProcessingTask],
-  migrations: [`${__dirname}/migrations/*.{js,ts}`],
+  migrations: [`${migrationDirectory}/*.{js,ts}`],
   synchronize: false,
   logging: false,
 });

@@ -1,0 +1,67 @@
+
+> rbdrm-course-project@1.0.0 demo:rollout
+> bash demo/demo-rollout.sh
+
+Checking current deployment readiness
+deployment "marketplace-deployment" successfully rolled out
+Starting rollout revision: hw28-1795618996
+Starting in-cluster load against: http://marketplace-service.marketplace-hw28.svc.cluster.local:3000/healthz
+pod/rollout-load-231 created
+Waiting for load pod to start
+Triggering Pulumi rollout
+
+> rbdrm-course-project@1.0.0 up
+> bash scripts/with-secrets.sh dev bash scripts/pulumi-up.sh
+
+Previewing update (ci):
+
+@ previewing update.......
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource update [diff: ~spec]
+    pulumi:pulumi:Stack rbdrm-hw28-ci  
+Resources:
+    ~ 1 to update
+    6 unchanged
+
+Updating (ci):
+
+@ updating.......
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (0s) [diff: ~spec]
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (0s) [diff: ~spec]; Waiting for app ReplicaSet to be available (0/1 Pods available)
+@ updating............
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (8s) [diff: ~spec]; Waiting for app ReplicaSet to be available (1/2 Pods available)
+@ updating....
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (10s) [diff: ~spec]; warning: [Pod marketplace-hw28/marketplace-deployment-5f98659c5c-qg8hf]: containers with unready status: [marketplace]
+@ updating...........
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (17s) [diff: ~spec]; Waiting for app ReplicaSet to be available (2/3 Pods available)
+@ updating.....
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (20s) [diff: ~spec]; warning: [Pod marketplace-hw28/marketplace-deployment-5f98659c5c-j8sl4]: containers with unready status: [marketplace]
+@ updating.........
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (25s) [diff: ~spec]; Deployment initialization complete
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updating (25s) [diff: ~spec]; 
+ ~  kubernetes:apps/v1:Deployment marketplace-deployment-resource updated (25s) [diff: ~spec]; 
+    pulumi:pulumi:Stack rbdrm-hw28-ci  
+Outputs:
+    deploymentOutput: "marketplace-deployment"
+    hpaOutput       : "marketplace-hpa"
+    namespaceOutput : "marketplace-hw28"
+    pdbOutput       : "marketplace-pdb"
+    serviceOutput   : "marketplace-service"
+
+Resources:
+    ~ 1 updated
+    6 unchanged
+
+Duration: 31s
+
+deployment "marketplace-deployment" successfully rolled out
+deployment "marketplace-deployment" successfully rolled out
+Waiting for load generator to finish
+pod/rollout-load-231 condition met
+profile=correct
+before-revision=sha256:039e7f246ee67bb46edcc2df52a0aae7631883d6f2efeaff9293b65eadc73844
+after-revision=hw28-1795618996
+rolling-update=true
+requests=26991
+ok=26991
+failed=0
+rollout-seconds=43

@@ -11,6 +11,9 @@
         }
       ],
       "request": {
+        "headers": {
+          "Authorization": "Bearer contract-token"
+        },
         "method": "GET",
         "path": "/orders/1"
       },

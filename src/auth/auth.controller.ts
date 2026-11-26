@@ -5,9 +5,13 @@ import {
   HttpCode,
   Post,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 
 import { AuthService } from './auth.service';
+import { ZodValidationPipe } from '../validation/zod.pipe';
+import { loginSchema, logoutSchema, refreshSchema } from '../validation/schemas';
+import { RateLimitGuard } from '../redis/rate-limit.guard';
 
 interface LoginBody {
   email: string;
@@ -28,8 +32,9 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(200)
+  @UseGuards(RateLimitGuard)
   login(
-    @Body()
+    @Body(new ZodValidationPipe(loginSchema))
     body: LoginBody,
   ) {
     return this.authService.login(body);
@@ -38,7 +43,7 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(200)
   refresh(
-    @Body()
+    @Body(new ZodValidationPipe(refreshSchema))
     body: RefreshBody,
   ) {
     return this.authService.refresh(body.refreshToken);
@@ -49,7 +54,7 @@ export class AuthController {
   async logout(
     @Headers('authorization')
     authorization: string | undefined,
-    @Body()
+    @Body(new ZodValidationPipe(logoutSchema))
     body: LogoutBody,
   ): Promise<void> {
     if (!authorization || !authorization.startsWith('Bearer ')) {

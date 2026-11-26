@@ -1,13 +1,20 @@
 import AppDataSource from '../data-source';
 import { relayOutboxBatch } from './outbox-relay';
+import { sleep } from '../lifecycle';
 
 async function main(): Promise<void> {
-  try {
-    const stats = await relayOutboxBatch();
+  let stopping = false;
+  process.once('SIGINT', () => { stopping = true; });
+  process.once('SIGTERM', () => { stopping = true; });
 
-    console.log(`selected=${stats.selected}`);
-    console.log(`published=${stats.published}`);
-    console.log(`marked=${stats.markedPublished}`);
+  try {
+    while (!stopping) {
+      const stats = await relayOutboxBatch();
+      if (stats.selected > 0) {
+        console.log(`selected=${stats.selected} published=${stats.published} marked=${stats.markedPublished}`);
+      }
+      await sleep(stats.selected > 0 ? 100 : 1000);
+    }
   } finally {
     if (AppDataSource.isInitialized) {
       await AppDataSource.destroy();

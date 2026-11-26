@@ -1,0 +1,32 @@
+{
+  "resourcePreEvent": {
+    "metadata": {
+      "type": "kubernetes:apps/v1:Deployment",
+      "new": {
+        "inputs": {
+          "metadata": {
+            "name": "marketplace-deployment"
+          },
+          "spec": {
+            "replicas": 3,
+            "template": {
+              "spec": {
+                "containers": [
+                  {
+                    "name": "marketplace",
+                    "resources": {
+                      "requests": {
+                        "cpu": "50m",
+                        "memory": "96Mi"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

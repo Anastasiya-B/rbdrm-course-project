@@ -9,6 +9,8 @@ import {
 import type { OnModuleDestroy } from '@nestjs/common';
 import type { Server, Socket } from 'socket.io';
 import type { Subscription } from 'rxjs';
+import { verifyAccessToken } from '../auth/auth.tokens';
+import { isAccessTokenDenied } from '../auth/access-denylist';
 
 import { OrderEventsService } from './order-events.service';
 import { OrdersService } from './orders.service';
@@ -62,7 +64,16 @@ export class OrdersGateway implements OnGatewayInit, OnModuleDestroy {
     @MessageBody() payload: JoinOrderPayload,
   ): Promise<JoinOrderResponse> {
     const orderId = Number(payload?.orderId);
-    const userId = Number(client.handshake.auth?.userId);
+    const token = client.handshake.auth?.token ?? client.handshake.auth?.accessToken;
+    let userId = 0;
+    try {
+      if (typeof token !== 'string') throw new Error('token required');
+      const payload = verifyAccessToken(token);
+      if (await isAccessTokenDenied(payload.jti)) throw new Error('token revoked');
+      userId = Number(payload.sub);
+    } catch {
+      return { ok: false, error: 'Unauthorized' };
+    }
 
     if (!Number.isInteger(orderId) || orderId <= 0) {
       return {

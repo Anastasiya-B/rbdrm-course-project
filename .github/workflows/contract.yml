@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: npm
@@ -40,13 +40,16 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Run integration tests
-        run: npm run test:integration
+        run: env -u CODEX_CI npm run test:integration
 
       - name: Run E2E tests
-        run: npm run test:e2e
+        run: env -u CODEX_CI npm run test:e2e
+
+      - name: Run business unit tests
+        run: env -u CODEX_CI npm run test:unit
 
       - name: Generate consumer Pact
-        run: npm run test:contract
+        run: env -u CODEX_CI npm run test:contract
 
       - name: Publish Pact
         shell: bash
@@ -72,7 +75,7 @@ jobs:
             --data-binary @pacts/MarketplaceFrontend-MarketplaceAPI.json
 
       - name: Verify provider
-        run: npm run verify:provider
+        run: env -u CODEX_CI npm run verify:provider
 
       - name: Tag provider version as prod
         shell: bash

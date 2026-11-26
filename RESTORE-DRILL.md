@@ -2,16 +2,22 @@
 
 ## Date
 
-2026-09-30
+2026-11-25
 
 ## Backup
 
 Backup format: PostgreSQL custom format (`pg_dump -Fc`)
 
+Backup file:
+
+```text
+backups/marketplace_2026-11-25_15-24-54.dump
+```
+
 Backup size:
 
 ```text
-24K
+48K
 ```
 
 ## Verification
@@ -19,13 +25,13 @@ Backup size:
 Source checksum:
 
 ```text
-10|8378600
+32|8880400
 ```
 
 Restored checksum:
 
 ```text
-10|8378600
+32|8880400
 ```
 
 Result:
@@ -41,10 +47,10 @@ The checksum contains the order row count and the sum of `orders.total_amount`.
 Measured restore time:
 
 ```text
-7 seconds
+6 seconds
 ```
 
-RTO (Recovery Time Objective) for the current local restore procedure is approximately **7 seconds**.
+RTO (Recovery Time Objective) for the current local restore procedure is approximately **6 seconds** in the isolated Docker restore drill. The drill exited successfully with `MATCH`.
 
 ## RPO
 
