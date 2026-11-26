@@ -36,6 +36,17 @@ Captured from the course-project repository. Secret values, tokens, and personal
 | Vulnerability gate | npm run scan | found=9; severity HIGH,CRITICAL; max-allowed=10; gate=pass | VERIFIED |
 | Deployment evidence | inspect evidence/base*, evidence/demos.txt, workflows | previous AWS evidence is not a six-zero teardown; final kind deployment is verified by run 45640058955 | VERIFIED via accepted CI deployment evidence |
 | Final CI/CD deployment | [GitHub Actions run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955) and [local artifacts](ci-run-45640058955) | built/deployed digest equal; build-invocations=1; rolling-update=true; requests=26991; ok=26991; failed=0; rollout-seconds=43; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; OIDC signature=1; secret-in-manifest=0; scan exit=0 | VERIFIED |
+| Shutdown readiness | `curl /healthz`; `curl /readyz`; SIGTERM; repeated `curl /readyz` | No isolated API process was available; no shutdown HTTP status or process exit result recorded | BLOCKED |
+| Structured logs | `npm run demo:logs` | wrapper could not start a standalone API with the isolated database URL; terminated without shared-container changes; no numerical result | BLOCKED |
+| RED metrics | `API_URL=http://127.0.0.1:30080 node demo/demo-metrics.mjs` | exit 1; warm-up returned `ok=404 not-found=404 fail=404`; running kind image has `/metrics` returning 404 | BLOCKED |
+| OpenTelemetry trace | `npm run demo:trace` | not executed after API prerequisite failure; OTLP backend `/ready` returned `ready`; no trace delivery result | BLOCKED |
+| Grafana RED dashboard source | inspect `observability/grafana/dashboards/marketplace-observability.json` | stored dashboard contains Request rate, 5xx error rate, and Request duration p95 panels | VERIFIED |
+| Compose endpoint verification | `curl http://127.0.0.1:3300/{healthz,readyz,metrics}` | healthz=200; readyz=200; metrics=200; running image `marketplace-course-api` | VERIFIED |
+| Graceful shutdown | disposable `docker compose --env-file .env.compose.local run ... api`; SIGTERM; repeated `curl http://127.0.0.1:3310/readyz` | health-before=200; ready-before=200; first readiness during shutdown=503; exit-code=0; shutdown log reached `Closing HTTP server` | VERIFIED |
+| Structured logs | `API_URL=http://127.0.0.1:3300 node demo/demo-logs.mjs` plus live `docker logs` capture | request-log-lines=30; normal-layers=3; distinct-trace-ids=10; burst=8; burst-trace-ids=8; secret-request-logs=3; secrets-redacted=1; exit 0 | VERIFIED |
+| RED metrics/cardinality | `API_URL=http://127.0.0.1:3300 node demo/demo-metrics.mjs` | sent-ok=40; sent-fail=10; counter-delta=50; errors-delta=10; above-top-bucket=0; series-before=3; series-after=3; exit 0 | VERIFIED |
+| OpenTelemetry trace | `API_URL=http://127.0.0.1:3300 TRACE_API_URL=http://127.0.0.1:22904 TRACE_LOG_FILE=... node demo/demo-trace.mjs` | spans=12; orphan-spans=0; trace-matches-header=1; trace-matches-log=1; span-status-error=1; exit 0 | VERIFIED |
+| Grafana RED dashboard data | Prometheus queries matching stored dashboard | target health=up; request rate=3.2575734658355664 req/s; 5xx rate=0.21884631517516823 req/s; duration p95=0.26125432475098304 s | VERIFIED |
 
 ## Runtime and troubleshooting notes
 
@@ -47,6 +58,8 @@ The final CI artifacts record the post-change gates. `rollout-http-codes.txt` co
 
 The artifact secret review found only environment-variable names, Kubernetes Secret references, and Pulumi's literal `[secret]` redaction marker. No private key, password, token, or secret value is present in the retained files.
 
+The final runtime verification used the current Compose API at port 3300, not the stale kind API. A confirmed Prometheus configuration defect was corrected from `host.docker.internal:3000` to `host.docker.internal:3300`; only Prometheus was restarted. The Compose API was configured to export OTLP to the existing LGTM endpoint through `host.docker.internal:22918`; only the API container was recreated. The main API and persistent volumes were preserved. The SIGTERM test used a disposable API container on port 3310 and left the main API running.
+
 ## Evidence links
 
 - Restore procedure and actual RTO/RPO: RESTORE-DRILL.md
@@ -55,3 +68,4 @@ The artifact secret review found only environment-variable names, Kubernetes Sec
 - Previous deployment artifacts: evidence/base.txt, evidence/base-state.json, evidence/demos.txt
 - Final CI/CD deployment run: [run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955)
 - Final retained CI artifacts: [evidence/ci-run-45640058955](ci-run-45640058955)
+- Observability implementation: `src/observability`, `src/lifecycle.ts`, `demo/demo-logs.sh`, `demo/demo-metrics.mjs`, `demo/demo-trace.sh`, `observability/grafana/dashboards/marketplace-observability.json`
