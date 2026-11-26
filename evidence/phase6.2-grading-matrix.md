@@ -1,6 +1,6 @@
 # Official grading matrix
 
-This matrix uses the official implementation rubric only. It excludes defense points. Scores are integer self-assessment points based on repository source and recorded evidence; a partial subproperty is rounded down. The original HW0 template was unavailable, so the domain table is explicitly repository-derived.
+This matrix uses the official implementation rubric only. It excludes defense points. Scores are integer self-assessment points based on repository source and recorded evidence; a partial subproperty is rounded down. The original HW0 template was unavailable, so the domain table is explicitly repository-derived. These are conservative estimates, not the final grade assigned by the evaluator. Estimated LMS grade without defense: 14/15.
 
 ## 11.1 Architecture — 15 points
 
@@ -61,8 +61,8 @@ This matrix uses the official implementation rubric only. It excludes defense po
 | Reproducible Compose, health checks, persistent data | 6 | 6 | VERIFIED | docker-compose.yml, migrations, named volumes | API_PORT=3300 docker compose --env-file .env.compose.local up -d --build --wait; final smoke passed | phase5 and phase6.2 evidence |
 | Multi-stage, shell-free, non-root, build secrets, vulnerability gate | 3 | 3 | VERIFIED | docker/Dockerfile, scripts/scan-image.sh | image user 65532, shell null, BuildKit secret; Trivy 9 findings, max 10, pass | phase6.2 verification |
 | Deployment as code, rolling update under load, probes, SIGTERM | 3 | 2 | PARTIAL | infra/index.ts, .github/workflows/pr.yml, demo/demo-rollout.sh | [CI artifacts](ci-run-45640058955): rolling-update=true; 26991 requests; 26991 OK; failed=0; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; separate `/readyz` and `/healthz`; SIGTERM readiness transition is not captured | `npm run demo:rollout` with `MIN_REQUESTS=5000`; evidence/ci-run-45640058955/rollout.txt and deployment.json |
-| External deployment evidence | 3 | 3 | VERIFIED | .github/workflows/pr.yml, infra/index.ts, Pulumi/kind deployment | `built-digest=deployed-digest=sha256:039e7f246ee67bb46edcc2df52a0aae7631883d6f2efeaff9293b65eadc73844`; `digest-equal=true`; one build invocation | [CI run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955); evidence/ci-run-45640058955/evidence.txt |
-| **11.6 total** | **15** | **15** | **VERIFIED** | | | Disposable Compose API returned readiness 503 on SIGTERM and exited 0; main API was not stopped |
+| External deployment evidence | 3 | 2 | PARTIAL | .github/workflows/pr.yml, infra/index.ts, Pulumi/kind deployment | `built-digest=deployed-digest=sha256:039e7f246ee67bb46edcc2df52a0aae7631883d6f2efeaff9293b65eadc73844`; `digest-equal=true`; one build invocation | CI run 45640058955 validates commit `c5aa8bf`, not the subsequent Compose and Prometheus configuration changes; evidence/ci-run-45640058955/evidence.txt |
+| **11.6 total** | **15** | **14** | **PARTIAL** | | | CI evidence is retained for `c5aa8bf`; subsequent Compose and Prometheus configuration changes were not included in that run |
 
 ## 11.7 Observability, tests and pipeline — 15 points
 
@@ -84,8 +84,8 @@ This matrix uses the official implementation rubric only. It excludes defense po
 | 11.3 Data storage | 10 | 8 |
 | 11.4 Security and validation | 10 | 10 |
 | 11.5 Asynchronous processing | 10 | 8 |
-| 11.6 Docker and deployment | 15 | 15 |
-| 11.7 Observability, tests and pipeline | 15 | 15 |
-| **TOTAL** | **95** | **90** |
+| 11.6 Docker and deployment | 15 | 14 |
+| 11.7 Observability, tests and pipeline | 15 | 12 |
+| **TOTAL** | **95** | **86** |
 
-This is a defensible repository-evidence estimate, not a guaranteed grade. The Compose runtime verification recovers the final 11.6 point and three 11.7 points. The remaining two points are the unverified 11.3 cache/session and private storage/CDN criteria; RabbitMQ failure-mode evidence remains a separate partial area but is already reflected in 11.5.
+This is a defensible repository-evidence estimate, not a guaranteed final evaluator grade. The final estimate is 86/95: 11.1 14/15, 11.2 20/20, 11.3 8/10, 11.4 10/10, 11.5 8/10, 11.6 14/15, and 11.7 12/15. The unverified cache and private storage/CDN criteria, partial RabbitMQ failure-mode evidence, and the post-CI configuration changes are reflected in these deductions.

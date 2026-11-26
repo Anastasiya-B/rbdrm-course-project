@@ -35,7 +35,7 @@ Captured from the course-project repository. Secret values, tokens, and personal
 | Image metadata | docker image inspect rbdrm-marketplace:hw28 | UID 65532; shell null; node entrypoint; no secret env names | VERIFIED |
 | Vulnerability gate | npm run scan | found=9; severity HIGH,CRITICAL; max-allowed=10; gate=pass | VERIFIED |
 | Deployment evidence | inspect evidence/base*, evidence/demos.txt, workflows | previous AWS evidence is not a six-zero teardown; final kind deployment is verified by run 45640058955 | VERIFIED via accepted CI deployment evidence |
-| Final CI/CD deployment | [GitHub Actions run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955) and [local artifacts](ci-run-45640058955) | built/deployed digest equal; build-invocations=1; rolling-update=true; requests=26991; ok=26991; failed=0; rollout-seconds=43; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; OIDC signature=1; secret-in-manifest=0; scan exit=0 | VERIFIED |
+| Final CI/CD deployment | [GitHub Actions run 45640058955](https://github.com/Anastasiya-B/rbdrm-course-project/actions/runs/45640058955) and [local artifacts](ci-run-45640058955) | built/deployed digest equal; build-invocations=1; rolling-update=true; requests=26991; ok=26991; failed=0; rollout-seconds=43; readyReplicas=3; updatedReplicas=3; maxUnavailable=0; maxSurge=1; OIDC signature=1; secret-in-manifest=0; scan exit=0 | VERIFIED for commit `c5aa8bf`; it does not validate subsequent Compose and Prometheus configuration changes |
 | Shutdown readiness | `curl /healthz`; `curl /readyz`; SIGTERM; repeated `curl /readyz` | No isolated API process was available; no shutdown HTTP status or process exit result recorded | BLOCKED |
 | Structured logs | `npm run demo:logs` | wrapper could not start a standalone API with the isolated database URL; terminated without shared-container changes; no numerical result | BLOCKED |
 | RED metrics | `API_URL=http://127.0.0.1:30080 node demo/demo-metrics.mjs` | exit 1; warm-up returned `ok=404 not-found=404 fail=404`; running kind image has `/metrics` returning 404 | BLOCKED |
@@ -49,6 +49,8 @@ Captured from the course-project repository. Secret values, tokens, and personal
 | Grafana RED dashboard data | Prometheus queries matching stored dashboard | target health=up; request rate=3.2575734658355664 req/s; 5xx rate=0.21884631517516823 req/s; duration p95=0.26125432475098304 s | VERIFIED |
 
 ## Runtime and troubleshooting notes
+
+The conservative grading estimate is 86/95, with an estimated LMS grade of 14/15 without defense. This is an evidence-based estimate, not the final grade assigned by the evaluator.
 
 Docker Desktop/Testcontainers is required for integration/E2E infrastructure. The local environment previously required removing CODEX_CI for test commands; workflows use env -u CODEX_CI. If Docker uses a different local socket, configure Docker Desktop or set a shell-local DOCKER_HOST; no personal absolute socket is part of the repository.
 
